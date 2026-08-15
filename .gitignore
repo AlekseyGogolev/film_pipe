@@ -5,8 +5,13 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.playwright-mcp/
+filmpipe-agent4-*.png
 
 data/
 logs/
+
+frontend/node_modules/
+frontend/dist/
 
 .DS_Store

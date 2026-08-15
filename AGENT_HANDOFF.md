@@ -2,13 +2,15 @@
 
 ## Current MVP State
 
-Agent 3 backend API work is implemented. The backend now supports:
+Agent 4 frontend work is implemented. The MVP now supports:
 
 ```text
 multipart upload
 → B&W processing job
 → per-image status/errors/artifacts
 → artifact preview/download
+→ Original / Positive comparison UI
+→ individual artifact download
 → batch ZIP download
 ```
 
@@ -19,13 +21,15 @@ original
 positive
 ```
 
-`positive` is a 16-bit TIFF generated from a decoded B&W negative scan. The frontend is not implemented yet.
+`positive` is a 16-bit TIFF generated from a decoded B&W negative scan. The frontend is a minimal React/Vite app in `frontend/` and talks only to the HTTP API contract.
 
 ## Architecture
 
 Dependency map:
 
 ```text
+Frontend / React UI
+  ↓
 HTTP API
   ↓
 Application / JobService + InMemoryJobRegistry
@@ -54,7 +58,8 @@ Important boundaries:
 - OpenCV/NumPy are confined to `backend/filmpipe/processing`.
 - Basic B&W pipeline has no AI runtime.
 - HTTP handlers do not contain image processing logic.
-- Frontend is not implemented.
+- Frontend uses FilmPipe API concepts only: Job, Image, Status, Artifact, Error, Mode.
+- Frontend does not know filesystem paths, OpenCV/NumPy types, processor implementations, or storage layout.
 
 ## Technology Decisions
 
@@ -64,7 +69,9 @@ Important boundaries:
 - Uploads: multipart form parsing via `python-multipart`.
 - Job persistence: in-memory `InMemoryJobRegistry`; jobs reset on server restart.
 - Job execution: `POST /jobs` processes synchronously for MVP and returns the final job state.
-- Frontend: React/Vite direction documented only; no implementation yet.
+- Frontend: React 18 + TypeScript + Vite 8 under `frontend/`.
+- Frontend API base: defaults to `/api`; Vite dev server proxies `/api/*` to `http://127.0.0.1:8000/*`.
+- Frontend icons: `lucide-react`.
 - Storage: filesystem under `data/jobs/{job_id}/{image_id}/{artifact_type}/`.
 - Tests: pytest; API tests use a small in-process ASGI harness because the installed FastAPI/Starlette TestClient/httpx transports hang in this environment.
 - Logging: standard Python `logging`, default file `logs/filmpipe.log`.
@@ -74,6 +81,7 @@ WHY:
 - No DB is needed for local MVP job state.
 - Synchronous job creation keeps Agent 3 simple; frontend can still poll `GET /jobs/{job_id}` and will receive final state for now.
 - ZIP export reads existing generated artifacts from filesystem storage and excludes immutable originals.
+- Vite proxy avoids adding CORS to the FastAPI MVP and keeps backend API unchanged.
 
 Image decisions from Agent 2 remain:
 
@@ -95,6 +103,12 @@ Image decisions from Agent 2 remain:
 - Filesystem storage: `backend/filmpipe/infrastructure/storage.py`
 - Job orchestration and in-memory registry: `backend/filmpipe/application/jobs.py`
 - HTTP API and response serialization helpers: `backend/filmpipe/api/app.py`
+- Frontend entrypoint: `frontend/src/main.tsx`
+- Frontend app/state/UI: `frontend/src/App.tsx`
+- Frontend typed API client: `frontend/src/api.ts`
+- Frontend API response types: `frontend/src/types.ts`
+- Frontend styling: `frontend/src/styles.css`
+- Vite proxy/config: `frontend/vite.config.ts`
 
 Core concepts:
 
@@ -263,9 +277,7 @@ Preview/download endpoints return the artifact bytes with the artifact MIME type
 
 ## Frontend Contract
 
-No frontend app exists yet. Agent 4 should implement React/Vite against the API contract above.
-
-Expected frontend flow:
+Implemented frontend flow:
 
 ```text
 select files
@@ -277,6 +289,17 @@ use original/positive preview_url for comparison
 use artifact download_url for individual downloads
 use job.download_url for batch ZIP
 ```
+
+Current UI behavior:
+
+- Single and batch file selection via local file picker.
+- B&W is enabled; Colorize and Creative are visible but disabled.
+- Creative prompt field exists but is disabled while only B&W is supported.
+- `POST /jobs` is called with multipart `mode` and `files`.
+- Polling exists for `pending`/`running` jobs, although current backend returns final state synchronously.
+- Job status, per-image status, per-image stage errors, artifact links, and batch ZIP are rendered from API response fields.
+- Original/Positive panels attempt to render `preview_url` in `<img>`.
+- If the browser cannot display the artifact MIME type, the UI shows a fallback and keeps download actions available.
 
 Do not expose or depend on filesystem paths, OpenCV/NumPy details, processor class names beyond user-facing `stage`, or storage layout.
 
@@ -322,19 +345,49 @@ curl -X POST http://127.0.0.1:8000/jobs \
 
 Use the factory target. `filmpipe.api.app:app` is not the supported start path.
 
+Frontend:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Frontend URL:
+
+```text
+http://127.0.0.1:5173/
+```
+
+`npm run dev` binds to `127.0.0.1` and uses the Vite `/api` proxy. If the backend runs elsewhere, set `VITE_FILMPIPE_API_BASE`.
+
 ## How to Test
 
 ```bash
 pytest
+cd frontend
+npm run build
 ```
 
 Current tests cover storage immutability/overwrite behavior, pipeline success/failure/partial success, job status aggregation, logging context, direct engine invocation without HTTP, decode/validation errors, negative conversion, tone normalization, positive artifact writing, HTTP job creation, batch partial success, optional failure exposure, artifact preview/download, and ZIP export.
 
-Last verified by Agent 3:
+Last verified by Agent 4:
 
 ```text
 .venv/bin/pytest
 22 passed
+
+cd frontend && npm run build
+passed
+```
+
+Manual smoke verified by Agent 4:
+
+```text
+FastAPI http://127.0.0.1:8000/health -> {"status":"ok"}
+Vite proxy http://127.0.0.1:5173/api/health -> {"status":"ok"}
+POST http://127.0.0.1:5173/api/jobs with a synthetic 16-bit TIFF -> job.status success
+Playwright UI smoke: select TIFF, Process, job/image status Готово, download links rendered
 ```
 
 ## Known Limitations
@@ -342,7 +395,7 @@ Last verified by Agent 3:
 - API job registry is in-memory; jobs disappear on server restart.
 - `POST /jobs` is synchronous for MVP; long batches block that request until complete.
 - Only technical B&W negative-to-positive processing is implemented.
-- No frontend yet.
+- Browser TIFF preview is limited. The API returns TIFF bytes for TIFF artifacts; the frontend shows fallback preview panels when the browser cannot render `image/tiff`.
 - No film border detection, frame cropping, rotation, dust/scratch detection, restoration, colorization, or creative processing.
 - No RAW camera formats, floating-point TIFF, palette images, or CMYK handling.
 - JPEG input is accepted but is already lossy; TIFF/PNG are preferred.
@@ -356,6 +409,7 @@ Last verified by Agent 3:
 - Some real scans may need frame-border masking before percentile normalization.
 - Current pipeline treats RGB/RGBA inputs as B&W luminance; color negative workflow is not implemented.
 - The installed FastAPI/Starlette TestClient/httpx transports hang in this environment; API tests currently use a tiny local ASGI harness instead.
+- No automated frontend component/e2e test suite yet; Agent 4 verified with production build and Playwright smoke only.
 
 ## Decisions That Should Not Be Revisited Without Reason
 
@@ -368,19 +422,20 @@ Last verified by Agent 3:
 - Use 16-bit TIFF for generated positive artifacts.
 - Do not include immutable originals in batch result ZIP by default.
 - Do not start AI restoration before the B&W positive pipeline, HTTP API, and frontend MVP are integrated.
+- Keep frontend on API response URLs and typed API concepts; do not add filesystem coupling.
+- Do not add CORS just for Vite dev while the `/api` proxy satisfies local frontend development.
 
 ## Completed In This Task
 
-- Added `InMemoryJobRegistry`.
-- Hardened `JobService.process()` so unexpected per-image exceptions do not abort a batch.
-- Implemented FastAPI job endpoints.
-- Implemented multipart upload for one or more files.
-- Implemented job/image state serialization without filesystem paths.
-- Implemented artifact preview and individual artifact download.
-- Implemented batch ZIP export for generated artifacts.
-- Added API tests for single success, batch partial success, optional failure after positive, unsupported mode, artifact download, and ZIP export.
-- Updated README and this handoff.
+- Implemented minimal React/Vite/TypeScript frontend in `frontend/`.
+- Added typed API client and API response types.
+- Added file selection, B&W mode selection, disabled future Colorize/Creative controls, and disabled creative prompt.
+- Added job submission, status rendering, future-compatible polling, per-image selection, per-image errors, Original/Positive comparison panels, individual artifact downloads, and batch ZIP download.
+- Added TIFF preview fallback when browser image rendering fails.
+- Added Vite `/api` proxy to preserve backend contract without adding CORS.
+- Added frontend package/lock/config, favicon, styling, and docs.
+- Updated root README and this handoff.
 
 ## Next Agent
 
-Agent 4 should build the minimal React/Vite frontend against the API contract in this handoff. Use `POST /jobs`, `GET /jobs/{job_id}`, artifact preview/download URLs, and job ZIP download. Do not move image processing into the frontend or change backend contracts just for UI convenience unless a concrete blocking issue is found.
+Agent 5 should perform MVP integration and hardening. Start with real B&W negative scans, verify upload → processing → positive → comparison → downloads for single and batch, and check mixed valid/corrupt batch behavior in the UI. Pay special attention to TIFF browser preview limitations, long synchronous jobs, user-facing error clarity, and whether Agent 5 needs a backend-generated browser-friendly preview artifact or endpoint. Do not start AI restoration/colorization/creative processing before the MVP flow is verified end to end.

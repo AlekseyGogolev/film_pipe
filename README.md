@@ -1,12 +1,13 @@
 # FilmPipe
 
-FilmPipe is a local application foundation for processing film scans. The current backend has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a local HTTP API, and a real MVP B&W processing pipeline.
+FilmPipe is a local application foundation for processing film scans. The current MVP has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a local HTTP API, a real B&W processing pipeline, and a minimal React/Vite frontend.
 
-The default processing pipeline decodes a B&W negative scan, converts it to a positive, applies automatic tone normalization, and writes a 16-bit TIFF `positive` artifact. The frontend is still a later MVP stage.
+The default processing pipeline decodes a B&W negative scan, converts it to a positive, applies automatic tone normalization, and writes a 16-bit TIFF `positive` artifact.
 
 ## Requirements
 
 - Python 3.12+
+- Node.js 20+ and npm for the frontend
 - Processing dependencies: NumPy and OpenCV
 - Local API dependencies: FastAPI, python-multipart, and Uvicorn
 
@@ -16,6 +17,8 @@ The default processing pipeline decodes a B&W negative scan, converts it to a po
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e ".[dev]"
+cd frontend
+npm install
 ```
 
 This installs `filmpipe` in editable mode, so imports such as `from filmpipe import process_image` work without setting `PYTHONPATH`.
@@ -26,6 +29,8 @@ VS Code workspace settings point Python/Pylance at `.venv/bin/python` and add `b
 
 ```bash
 pytest
+cd frontend
+npm run build
 ```
 
 ## Direct Processing Smoke Test
@@ -125,6 +130,35 @@ GET /jobs/{job_id}/download
 The ZIP contains existing generated result artifacts such as `positive`; immutable `original` files are available per image but are not included in batch result ZIPs.
 
 Only `mode=bw` is implemented. `colorize` and `creative` currently return a clear `400` response.
+
+## Local Frontend
+
+Start the API first:
+
+```bash
+uvicorn filmpipe.api.app:create_app --factory --reload
+```
+
+Then start the frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+Open:
+
+```text
+http://127.0.0.1:5173/
+```
+
+The Vite dev server proxies `/api/*` to `http://127.0.0.1:8000/*`. For a different backend URL, set:
+
+```bash
+VITE_FILMPIPE_API_BASE=http://127.0.0.1:8000 npm run dev
+```
+
+The frontend uses only API response URLs for artifact preview/download and does not depend on filesystem paths.
 
 ## Supported Image Formats
 
