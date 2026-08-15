@@ -1,5 +1,5 @@
 """Application orchestration layer."""
 
-from filmpipe.application.jobs import JobService
+from filmpipe.application.jobs import InMemoryJobRegistry, JobService
 
-__all__ = ["JobService"]
+__all__ = ["InMemoryJobRegistry", "JobService"]

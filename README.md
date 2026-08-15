@@ -1,14 +1,14 @@
 # FilmPipe
 
-FilmPipe is a local application foundation for processing film scans. The current backend has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a minimal HTTP app placeholder, and a real MVP B&W processing pipeline.
+FilmPipe is a local application foundation for processing film scans. The current backend has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a local HTTP API, and a real MVP B&W processing pipeline.
 
-The default processing pipeline decodes a B&W negative scan, converts it to a positive, applies automatic tone normalization, and writes a 16-bit TIFF `positive` artifact. HTTP job endpoints and the frontend are still later MVP stages.
+The default processing pipeline decodes a B&W negative scan, converts it to a positive, applies automatic tone normalization, and writes a 16-bit TIFF `positive` artifact. The frontend is still a later MVP stage.
 
 ## Requirements
 
 - Python 3.12+
 - Processing dependencies: NumPy and OpenCV
-- Local API placeholder dependencies: FastAPI and Uvicorn
+- Local API dependencies: FastAPI, python-multipart, and Uvicorn
 
 ## Installation
 
@@ -53,9 +53,9 @@ PY
 
 Artifacts are written under `data/jobs/{job_id}/{image_id}/{artifact_type}/`.
 
-## Local API Placeholder
+## Local API
 
-The API layer is intentionally minimal in Agent 1. It exposes only health once dependencies are installed:
+Start the local API:
 
 ```bash
 uvicorn filmpipe.api.app:create_app --factory --reload
@@ -67,7 +67,64 @@ Then open:
 http://127.0.0.1:8000/health
 ```
 
-Job creation, polling, artifact preview/download, and ZIP export are Agent 3 scope.
+### API Contract
+
+Create a B&W processing job with multipart form data:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs \
+  -F "mode=bw" \
+  -F "files=@scan_001.tiff" \
+  -F "files=@scan_002.tiff"
+```
+
+`POST /jobs` processes synchronously for the MVP and returns the final job state. Frontend polling should use:
+
+```text
+GET /jobs/{job_id}
+GET /jobs/{job_id}/images/{image_id}
+```
+
+Job responses use API concepts only:
+
+```text
+id
+status
+mode
+selected_modes
+images[]
+errors[]
+download_url
+```
+
+Each image includes:
+
+```text
+id
+filename
+status
+artifacts[]
+errors[]
+```
+
+Each artifact includes `type`, `filename`, `mime_type`, `preview_url`, and `download_url`; filesystem paths are not exposed.
+
+Artifact endpoints:
+
+```text
+GET /jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/preview
+GET /jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/download
+```
+
+Batch ZIP export:
+
+```text
+GET /jobs/{job_id}/download
+```
+
+The ZIP contains existing generated result artifacts such as `positive`; immutable `original` files are available per image but are not included in batch result ZIPs.
+
+Only `mode=bw` is implemented. `colorize` and `creative` currently return a clear `400` response.
 
 ## Supported Image Formats
 

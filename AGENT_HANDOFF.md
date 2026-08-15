@@ -2,23 +2,33 @@
 
 ## Current MVP State
 
-Agent 2 B&W image processing pipeline is implemented. The backend now accepts real local image files through the direct processing engine and produces:
+Agent 3 backend API work is implemented. The backend now supports:
+
+```text
+multipart upload
+→ B&W processing job
+→ per-image status/errors/artifacts
+→ artifact preview/download
+→ batch ZIP download
+```
+
+The real B&W processing pipeline from Agent 2 remains unchanged and still produces:
 
 ```text
 original
 positive
 ```
 
-The `positive` artifact is a 16-bit TIFF generated from a decoded B&W negative scan. The project still has only a minimal FastAPI `/health` placeholder; full job HTTP API, preview/download endpoints, ZIP export, and frontend remain later-agent scope.
+`positive` is a 16-bit TIFF generated from a decoded B&W negative scan. The frontend is not implemented yet.
 
 ## Architecture
 
 Dependency map:
 
 ```text
-HTTP API placeholder
+HTTP API
   ↓
-Application / JobService
+Application / JobService + InMemoryJobRegistry
   ↓
 Processing Engine
   ↓
@@ -43,27 +53,35 @@ Important boundaries:
 - Domain contracts do not depend on OpenCV, NumPy, FastAPI, or ML frameworks.
 - OpenCV/NumPy are confined to `backend/filmpipe/processing`.
 - Basic B&W pipeline has no AI runtime.
+- HTTP handlers do not contain image processing logic.
 - Frontend is not implemented.
 
 ## Technology Decisions
 
 - Backend: Python 3.12 package under `backend/filmpipe`.
 - Processing: NumPy + OpenCV in concrete processors only.
-- API: FastAPI placeholder with `/health`; full job API is Agent 3 scope.
+- API: FastAPI factory at `filmpipe.api.app:create_app`.
+- Uploads: multipart form parsing via `python-multipart`.
+- Job persistence: in-memory `InMemoryJobRegistry`; jobs reset on server restart.
+- Job execution: `POST /jobs` processes synchronously for MVP and returns the final job state.
 - Frontend: React/Vite direction documented only; no implementation yet.
 - Storage: filesystem under `data/jobs/{job_id}/{image_id}/{artifact_type}/`.
-- Tests: pytest.
+- Tests: pytest; API tests use a small in-process ASGI harness because the installed FastAPI/Starlette TestClient/httpx transports hang in this environment.
 - Logging: standard Python `logging`, default file `logs/filmpipe.log`.
 
-Image decisions:
+WHY:
+
+- No DB is needed for local MVP job state.
+- Synchronous job creation keeps Agent 3 simple; frontend can still poll `GET /jobs/{job_id}` and will receive final state for now.
+- ZIP export reads existing generated artifacts from filesystem storage and excludes immutable originals.
+
+Image decisions from Agent 2 remain:
 
 - MVP input formats: `.tif`, `.tiff`, `.png`, `.jpg`, `.jpeg`.
 - MVP input bit depth: unsigned 8-bit and unsigned 16-bit images.
 - Input channels: grayscale, RGB, and RGBA. RGB/RGBA are converted to grayscale for the B&W pipeline.
 - Internal representation: `FilmImage` in `backend/filmpipe/processing/image.py`, a processing-local 2D NumPy `float32` grayscale array normalized to `0.0..1.0`.
 - Output format: 16-bit TIFF for `positive` artifacts.
-
-WHY: TIFF output avoids adding lossy compression after processing, preserves 16-bit headroom for future restoration/colorization work, and keeps image-library details out of domain/API contracts.
 
 ## Important Contracts
 
@@ -75,23 +93,28 @@ WHY: TIFF output avoids adding lossy compression after processing, preserves 16-
 - Concrete B&W processors: `backend/filmpipe/processing/processors/images.py`
 - Stub/test processors: `backend/filmpipe/processing/processors/stubs.py`
 - Filesystem storage: `backend/filmpipe/infrastructure/storage.py`
-- Job orchestration: `backend/filmpipe/application/jobs.py`
+- Job orchestration and in-memory registry: `backend/filmpipe/application/jobs.py`
+- HTTP API and response serialization helpers: `backend/filmpipe/api/app.py`
 
 Core concepts:
 
-- `Processor` still has `name`, `optional`, and `process(image, context)`.
+- `Processor` has `name`, `optional`, and `process(image, context)`.
 - `ProcessingPipeline` runs processors in order and resolves per-image status.
+- `JobService.process()` handles single and batch with the same image pipeline.
+- `InMemoryJobRegistry` stores completed jobs for API lookup in the current process.
 - `ArtifactType` includes `original`, `positive`, `restored`, `colorized`, `creative`.
 - `ProcessingStatus` includes `pending`, `running`, `success`, `partial_success`, `failed`.
 - `ProcessingError` separates `user_message` from technical diagnostics.
-- `FilmImage` is not a domain contract; do not expose it through API/frontend.
+- `FilmImage` is not a domain/API contract; do not expose it through API/frontend.
 
 ## Processing Flow
 
 Current default flow:
 
 ```text
-input file
+uploaded file
+↓
+temporary upload file
 ↓
 save immutable original
 ↓
@@ -104,6 +127,8 @@ ToneNormalizerProcessor
 PositiveArtifactWriterProcessor
 ↓
 save positive artifact
+↓
+API job/image/artifact response
 ```
 
 Normalization algorithm:
@@ -117,7 +142,7 @@ Normalization algorithm:
 - If tonal range is effectively flat, skip stretching and preserve the converted image.
 - Encode output as 16-bit TIFF.
 
-Do not create a second pipeline or domain model for Agent 3.
+Do not create a second pipeline or domain model for the frontend.
 
 ## Storage / Artifacts
 
@@ -128,30 +153,132 @@ data/jobs/{job_id}/{image_id}/original/{source_filename}
 data/jobs/{job_id}/{image_id}/positive/{safe_stem}_positive.tiff
 ```
 
-`FileSystemArtifactStore` refuses to overwrite existing artifacts. The positive writer creates a temporary TIFF and then saves it through the existing storage contract, so storage remains the single path for artifact registration.
+`FileSystemArtifactStore` refuses to overwrite existing artifacts. API responses expose artifact URLs, not filesystem paths.
+
+Artifact response shape:
+
+```text
+type
+filename
+mime_type
+preview_url
+download_url
+```
+
+Batch ZIP export includes existing generated artifacts such as `positive`. It intentionally excludes `original` files.
 
 ## Failure Model
 
 - Original is saved before image processing starts.
 - Unsupported suffix, decode failure, invalid dimensions/channels, or unsupported dtype fail before `positive`; image status becomes `failed`.
 - Mandatory B&W processor failure before `positive` gives image status `failed`.
-- Optional processor failure after `positive` still gives `partial_success`; the existing `positive` artifact remains available.
-- Batch orchestration remains in `JobService`; single image is a special case of the same direct engine.
+- Optional processor failure after `positive` still gives image status `partial_success`; the existing `positive` artifact remains available.
+- Batch orchestration remains in `JobService`; single image is a special case of the same flow.
+- Failure of one image does not stop the rest of the batch.
+- `JobService` now catches unexpected per-image exceptions so one image cannot abort the whole job.
 - User-facing errors remain short and do not include stack traces. Technical details go into `ProcessingError.technical_message` and logs.
 
 ## API Contract
 
-Implemented only:
+Implemented endpoints:
 
 ```text
-GET /health -> {"status": "ok"}
+GET  /health
+GET  /jobs
+POST /jobs
+GET  /jobs/{job_id}
+GET  /jobs/{job_id}/images/{image_id}
+GET  /jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/preview
+GET  /jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/download
+GET  /jobs/{job_id}/download
 ```
 
-Full job creation, polling, artifact preview/download, per-image errors, and ZIP export are Agent 3 scope.
+Create job:
+
+```text
+POST /jobs
+Content-Type: multipart/form-data
+
+fields:
+  mode: bw
+  prompt: optional string, accepted but not used by bw
+  files: one or more uploaded files
+```
+
+Only `mode=bw` is implemented. `colorize` and `creative` return HTTP 400 with a clear message.
+
+`POST /jobs` currently runs synchronously and returns the final job. Polling contract for frontend:
+
+```text
+POST /jobs -> job response
+GET /jobs/{job_id} -> latest stored job response
+```
+
+Job response shape:
+
+```text
+id
+status
+mode
+selected_modes
+created_at
+updated_at
+images[]
+errors[]
+download_url
+```
+
+Image response shape:
+
+```text
+id
+filename
+status
+artifacts[]
+errors[]
+```
+
+Error response shape:
+
+```text
+stage
+message
+recoverable
+exception_type
+```
+
+`message` is user-facing. No stack traces are returned through API.
+
+Artifact types in routes use enum values such as:
+
+```text
+original
+positive
+restored
+colorized
+creative
+```
+
+Preview/download endpoints return the artifact bytes with the artifact MIME type. Batch ZIP returns `application/zip` and contains only existing generated result artifacts.
 
 ## Frontend Contract
 
-No frontend app exists yet. `frontend/README.md` records that Agent 4 should implement React/Vite against the backend API contract produced by Agent 3.
+No frontend app exists yet. Agent 4 should implement React/Vite against the API contract above.
+
+Expected frontend flow:
+
+```text
+select files
+select mode bw
+POST /jobs
+render job.status and images[].status
+show images[].errors[].message
+use original/positive preview_url for comparison
+use artifact download_url for individual downloads
+use job.download_url for batch ZIP
+```
+
+Do not expose or depend on filesystem paths, OpenCV/NumPy details, processor class names beyond user-facing `stage`, or storage layout.
 
 ## How to Run
 
@@ -172,7 +299,7 @@ print(result.status)
 print([artifact.path for artifact in result.artifacts])
 ```
 
-API placeholder:
+API:
 
 ```bash
 uvicorn filmpipe.api.app:create_app --factory --reload
@@ -184,31 +311,43 @@ Health endpoint:
 GET http://127.0.0.1:8000/health
 ```
 
+Create a job:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs \
+  -F "mode=bw" \
+  -F "files=@scan_001.tiff" \
+  -F "files=@scan_002.tiff"
+```
+
+Use the factory target. `filmpipe.api.app:app` is not the supported start path.
+
 ## How to Test
 
 ```bash
 pytest
 ```
 
-Current tests cover storage immutability/overwrite behavior, pipeline success/failure/partial success, job status aggregation, logging context, direct engine invocation without HTTP, decode/validation errors, negative conversion, tone normalization, and positive artifact writing.
+Current tests cover storage immutability/overwrite behavior, pipeline success/failure/partial success, job status aggregation, logging context, direct engine invocation without HTTP, decode/validation errors, negative conversion, tone normalization, positive artifact writing, HTTP job creation, batch partial success, optional failure exposure, artifact preview/download, and ZIP export.
 
-Last verified by Agent 2:
+Last verified by Agent 3:
 
 ```text
 .venv/bin/pytest
-18 passed
+22 passed
 ```
 
 ## Known Limitations
 
+- API job registry is in-memory; jobs disappear on server restart.
+- `POST /jobs` is synchronous for MVP; long batches block that request until complete.
 - Only technical B&W negative-to-positive processing is implemented.
+- No frontend yet.
 - No film border detection, frame cropping, rotation, dust/scratch detection, restoration, colorization, or creative processing.
 - No RAW camera formats, floating-point TIFF, palette images, or CMYK handling.
 - JPEG input is accepted but is already lossy; TIFF/PNG are preferred.
 - Tone normalization is a basic percentile stretch, not a scanner/profile-aware correction.
 - Metadata/ICC profiles are not preserved in positive artifacts.
-- No HTTP job API yet.
-- No frontend yet.
 - No AI restoration/colorization/creative processing.
 
 ## Open Issues
@@ -216,6 +355,7 @@ Last verified by Agent 2:
 - Real negative quality needs broader fixture coverage beyond synthetic test images.
 - Some real scans may need frame-border masking before percentile normalization.
 - Current pipeline treats RGB/RGBA inputs as B&W luminance; color negative workflow is not implemented.
+- The installed FastAPI/Starlette TestClient/httpx transports hang in this environment; API tests currently use a tiny local ASGI harness instead.
 
 ## Decisions That Should Not Be Revisited Without Reason
 
@@ -223,22 +363,24 @@ Last verified by Agent 2:
 - Keep domain contracts free of OpenCV/NumPy/FastAPI.
 - Keep `FilmImage` processing-local.
 - Use filesystem storage for MVP artifacts; do not add a database without proven need.
+- Use in-memory job registry for Agent 3/4 MVP flow unless persistence becomes necessary.
 - Use one pipeline model for single image and batch.
 - Use 16-bit TIFF for generated positive artifacts.
-- Do not start AI restoration before the B&W positive pipeline and HTTP/frontend MVP are integrated.
+- Do not include immutable originals in batch result ZIP by default.
+- Do not start AI restoration before the B&W positive pipeline, HTTP API, and frontend MVP are integrated.
 
 ## Completed In This Task
 
-- Added `FilmImage` processing-local representation.
-- Added `DecodeImageProcessor`.
-- Added `NegativeConverterProcessor`.
-- Added `ToneNormalizerProcessor`.
-- Added `PositiveArtifactWriterProcessor`.
-- Replaced the default stub pipeline with the real B&W processing flow.
-- Kept Agent 1 stub processors for focused contract/failure tests.
-- Added synthetic image fixtures and Agent 2 tests.
+- Added `InMemoryJobRegistry`.
+- Hardened `JobService.process()` so unexpected per-image exceptions do not abort a batch.
+- Implemented FastAPI job endpoints.
+- Implemented multipart upload for one or more files.
+- Implemented job/image state serialization without filesystem paths.
+- Implemented artifact preview and individual artifact download.
+- Implemented batch ZIP export for generated artifacts.
+- Added API tests for single success, batch partial success, optional failure after positive, unsupported mode, artifact download, and ZIP export.
 - Updated README and this handoff.
 
 ## Next Agent
 
-Agent 3 should build jobs, batch behavior, failure model exposure, and HTTP API around the existing direct processing engine. Use `default_pipeline()` as the real B&W pipeline and do not move image processing logic into HTTP handlers.
+Agent 4 should build the minimal React/Vite frontend against the API contract in this handoff. Use `POST /jobs`, `GET /jobs/{job_id}`, artifact preview/download URLs, and job ZIP download. Do not move image processing into the frontend or change backend contracts just for UI convenience unless a concrete blocking issue is found.
