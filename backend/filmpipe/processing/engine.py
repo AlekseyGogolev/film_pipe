@@ -14,7 +14,12 @@ from filmpipe.domain.processor import ProcessingContext
 from filmpipe.infrastructure.logging import get_logger
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.pipeline import ProcessingPipeline
-from filmpipe.processing.processors.stubs import PositiveArtifactStubProcessor
+from filmpipe.processing.processors import (
+    DecodeImageProcessor,
+    NegativeConverterProcessor,
+    PositiveArtifactWriterProcessor,
+    ToneNormalizerProcessor,
+)
 
 
 def process_image(
@@ -73,4 +78,11 @@ def process_image(
 
 
 def default_pipeline() -> ProcessingPipeline:
-    return ProcessingPipeline(processors=[PositiveArtifactStubProcessor()])
+    return ProcessingPipeline(
+        processors=[
+            DecodeImageProcessor(),
+            NegativeConverterProcessor(),
+            ToneNormalizerProcessor(),
+            PositiveArtifactWriterProcessor(),
+        ]
+    )

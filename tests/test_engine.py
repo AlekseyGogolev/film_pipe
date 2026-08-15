@@ -7,11 +7,12 @@ from filmpipe.infrastructure.logging import setup_logging
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.engine import process_image
 
+from tests.image_fixtures import synthetic_bw_negative_16bit, write_image
+
 
 def test_process_image_smoke_without_http_dependency(tmp_path):
     setup_logging(tmp_path / "logs")
-    source = tmp_path / "scan.txt"
-    source.write_bytes(b"negative")
+    source = write_image(tmp_path / "scan.tiff", synthetic_bw_negative_16bit())
 
     result = process_image(
         source,

@@ -59,6 +59,12 @@ class ProcessingPipeline:
 
             for error in processor_result.errors:
                 image_result.add_error(error)
+                processor_logger.error(
+                    "processor_reported_error stage=%s recoverable=%s message=%s",
+                    error.stage,
+                    error.recoverable,
+                    error.technical_message or error.user_message,
+                )
 
             if processor_result.image is not None:
                 current_image = processor_result.image
