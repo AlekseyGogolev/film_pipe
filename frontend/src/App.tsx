@@ -16,42 +16,30 @@ import { apiUrl, createJob, getJob } from "./api";
 import type {
   Artifact,
   ArtifactType,
-  InputPolarity,
+  InputProcessingMode,
   ImageResult,
   Job,
-  ProcessingMode,
   ProcessingStatus,
   RestorationMode,
 } from "./types";
 
-const MODES: Array<{
-  id: ProcessingMode;
-  label: string;
-  shortLabel: string;
-  enabled: boolean;
-}> = [
-  { id: "bw", label: "B&W", shortLabel: "BW", enabled: true },
-  { id: "colorize", label: "Colorize", shortLabel: "CO", enabled: false },
-  { id: "creative", label: "Creative", shortLabel: "CR", enabled: false },
-];
-
-const INPUT_POLARITIES: Array<{
-  id: InputPolarity;
+const INPUT_PROCESSING_OPTIONS: Array<{
+  id: InputProcessingMode;
   label: string;
   shortLabel: string;
   title: string;
 }> = [
   {
-    id: "negative",
-    label: "Negative",
-    shortLabel: "NEG",
-    title: "Film negative input; convert to positive",
+    id: "already_positive",
+    label: "Already Positive",
+    shortLabel: "POS",
+    title: "Uploaded image is already a positive; do not invert or prepare it as B&W.",
   },
   {
-    id: "positive",
-    label: "Positive",
-    shortLabel: "POS",
-    title: "Already-positive input; do not invert",
+    id: "bw_negative",
+    label: "Negative -> Positive",
+    shortLabel: "B&W",
+    title: "Convert a black-and-white negative scan into a positive.",
   },
 ];
 
@@ -97,13 +85,31 @@ const STATUS_ICONS: Record<ProcessingStatus, typeof Clock3> = {
   failed: XCircle,
 };
 
+const INPUT_PROCESSING_LABELS: Record<InputProcessingMode, string> = {
+  already_positive: "Already Positive",
+  bw_negative: "Negative -> Positive",
+};
+
+const RESTORATION_LABELS: Record<RestorationMode, string> = {
+  off: "Restoration Off",
+  telea: "TELEA",
+  lama: "LaMa",
+};
+
+const ARTIFACT_LABELS: Record<ArtifactType, string> = {
+  original: "Original",
+  positive: "Positive",
+  restored: "Restored",
+};
+
+const ARTIFACT_ORDER: ArtifactType[] = ["original", "positive", "restored"];
+
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<File[]>([]);
-  const [mode, setMode] = useState<ProcessingMode>("bw");
-  const [polarity, setPolarity] = useState<InputPolarity>("negative");
+  const [inputProcessing, setInputProcessing] =
+    useState<InputProcessingMode>("bw_negative");
   const [restoration, setRestoration] = useState<RestorationMode>("off");
-  const [prompt, setPrompt] = useState("");
   const [job, setJob] = useState<Job | null>(null);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -160,7 +166,7 @@ export default function App() {
     return () => window.clearInterval(intervalId);
   }, [job]);
 
-  const canSubmit = files.length > 0 && mode === "bw" && !submitting;
+  const canSubmit = files.length > 0 && !submitting;
 
   function handleFiles(event: ChangeEvent<HTMLInputElement>) {
     setFiles(Array.from(event.target.files ?? []));
@@ -176,7 +182,7 @@ export default function App() {
     setError(null);
     setJob(null);
     try {
-      const nextJob = await createJob(files, mode, polarity, restoration, prompt);
+      const nextJob = await createJob(files, inputProcessing, restoration);
       setJob(nextJob);
       setSelectedImageId(nextJob.images[0]?.id ?? null);
     } catch (submitError) {
@@ -208,127 +214,104 @@ export default function App() {
       </header>
 
       <section className="controlBand" aria-label="Job setup">
-        <div className="fileControl">
-          <input
-            ref={inputRef}
-            className="fileInput"
-            type="file"
-            multiple
-            aria-hidden="true"
-            tabIndex={-1}
-            accept=".tif,.tiff,.png,.jpg,.jpeg,image/tiff,image/png,image/jpeg"
-            onChange={handleFiles}
-          />
-          <button
-            className="fileButton"
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            disabled={submitting}
-            title="Выбрать сканы"
-          >
-            <FilePlus2 size={18} />
-            Выбрать файлы
-          </button>
-          <button
-            className="iconButton"
-            type="button"
-            onClick={resetSelection}
-            disabled={files.length === 0 || submitting}
-            title="Очистить выбор"
-          >
-            <RefreshCw size={17} />
-          </button>
-        </div>
-
-        <div className="modeGroup" role="radiogroup" aria-label="Processing mode">
-          {MODES.map((item) => (
+        <div className="controlRow controlRowPrimary">
+          <div className="fileControl">
+            <input
+              ref={inputRef}
+              className="fileInput"
+              type="file"
+              multiple
+              aria-hidden="true"
+              tabIndex={-1}
+              accept=".tif,.tiff,.png,.jpg,.jpeg,image/tiff,image/png,image/jpeg"
+              onChange={handleFiles}
+            />
             <button
-              key={item.id}
-              className={`modeButton ${mode === item.id ? "active" : ""}`}
+              className="fileButton"
               type="button"
-              disabled={!item.enabled || submitting}
-              onClick={() => setMode(item.id)}
-              title={item.enabled ? item.label : `${item.label}: не реализовано`}
-              aria-pressed={mode === item.id}
+              onClick={() => inputRef.current?.click()}
+              disabled={submitting}
+              title="Выбрать сканы"
             >
-              <span>{item.shortLabel}</span>
-              {item.label}
+              <FilePlus2 size={18} />
+              Выбрать файлы
             </button>
-          ))}
+            <button
+              className="iconButton"
+              type="button"
+              onClick={resetSelection}
+              disabled={files.length === 0 || submitting}
+              title="Очистить выбор"
+            >
+              <RefreshCw size={17} />
+            </button>
+          </div>
+
+          <button
+            className="primaryButton"
+            type="button"
+            disabled={!canSubmit}
+            onClick={submitJob}
+            title="Запустить обработку"
+          >
+            <Play size={18} />
+            {submitting ? "Обработка..." : "Process"}
+          </button>
         </div>
 
-        <label className="optionField">
-          <span>Input</span>
-          <div
-            className="modeGroup polarityGroup"
-            role="radiogroup"
-            aria-label="Input polarity"
-          >
-            {INPUT_POLARITIES.map((item) => (
-              <button
-                key={item.id}
-                className={`modeButton polarityButton ${
-                  polarity === item.id ? "active" : ""
-                }`}
-                type="button"
-                disabled={mode !== "bw" || submitting}
-                onClick={() => setPolarity(item.id)}
-                title={item.title}
-                aria-pressed={polarity === item.id}
-              >
-                <span>{item.shortLabel}</span>
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </label>
+        <div className="controlRow controlRowOptions">
+          <label className="optionField">
+            <span>Input Processing</span>
+            <div
+              className="choiceGroup inputProcessingGroup"
+              role="radiogroup"
+              aria-label="Input Processing"
+            >
+              {INPUT_PROCESSING_OPTIONS.map((item) => (
+                <button
+                  key={item.id}
+                  className={`choiceButton inputProcessingButton ${
+                    inputProcessing === item.id ? "active" : ""
+                  }`}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setInputProcessing(item.id)}
+                  title={item.title}
+                  aria-pressed={inputProcessing === item.id}
+                >
+                  <span>{item.shortLabel}</span>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </label>
 
-        <label className="optionField">
-          <span>Restoration</span>
-          <div
-            className="modeGroup restorationGroup"
-            role="radiogroup"
-            aria-label="Restoration"
-          >
-            {RESTORATION_MODES.map((item) => (
-              <button
-                key={item.id}
-                className={`modeButton restorationButton ${
-                  restoration === item.id ? "active" : ""
-                }`}
-                type="button"
-                disabled={mode !== "bw" || submitting}
-                onClick={() => setRestoration(item.id)}
-                title={item.title}
-                aria-pressed={restoration === item.id}
-              >
-                <span>{item.shortLabel}</span>
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </label>
-
-        <label className="promptField">
-          <span>Creative prompt</span>
-          <input
-            value={prompt}
-            disabled={mode !== "creative" || submitting}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder="Для будущего creative mode"
-          />
-        </label>
-
-        <button
-          className="primaryButton"
-          type="button"
-          disabled={!canSubmit}
-          onClick={submitJob}
-          title="Запустить обработку"
-        >
-          <Play size={18} />
-          {submitting ? "Обработка..." : "Process"}
-        </button>
+          <label className="optionField">
+            <span>Restoration</span>
+            <div
+              className="choiceGroup restorationGroup"
+              role="radiogroup"
+              aria-label="Restoration"
+            >
+              {RESTORATION_MODES.map((item) => (
+                <button
+                  key={item.id}
+                  className={`choiceButton restorationButton ${
+                    restoration === item.id ? "active" : ""
+                  }`}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setRestoration(item.id)}
+                  title={item.title}
+                  aria-pressed={restoration === item.id}
+                >
+                  <span>{item.shortLabel}</span>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </label>
+        </div>
       </section>
 
       {error ? (
@@ -364,6 +347,11 @@ export default function App() {
                 <Metric label="Готово" value={counts.success} />
                 <Metric label="Частично" value={counts.partial_success} />
                 <Metric label="Ошибки" value={counts.failed} />
+              </div>
+
+              <div className="jobMeta">
+                <span>{INPUT_PROCESSING_LABELS[job.input_processing]}</span>
+                <span>{RESTORATION_LABELS[job.restoration]}</span>
               </div>
 
               {job.errors.length ? <ErrorList errors={job.errors} /> : null}
@@ -432,9 +420,7 @@ function FileList({ files }: { files: File[] }) {
 }
 
 function ImageDetails({ image }: { image: ImageResult }) {
-  const original = artifactOf(image, "original");
-  const positive = artifactOf(image, "positive");
-  const restored = artifactOf(image, "restored");
+  const previewArtifacts = orderedArtifacts(image);
 
   return (
     <>
@@ -449,13 +435,21 @@ function ImageDetails({ image }: { image: ImageResult }) {
       {image.errors.length ? <ErrorList errors={image.errors} /> : null}
 
       <div className="comparisonGrid">
-        <PreviewCard label="Original" artifact={original} />
-        <PreviewCard label="Positive" artifact={positive} />
-        {restored ? <PreviewCard label="Restored" artifact={restored} /> : null}
+        {previewArtifacts.length ? (
+          previewArtifacts.map(({ artifact, label }) => (
+            <PreviewCard key={artifact.type} label={label} artifact={artifact} />
+          ))
+        ) : (
+          <div className="previewFallback noArtifacts">
+            <FileImage size={30} />
+            <strong>Артефакты не созданы</strong>
+            <span>{image.status}</span>
+          </div>
+        )}
       </div>
 
       <div className="artifactStrip">
-        {image.artifacts.map((artifact) => (
+        {previewArtifacts.map(({ artifact }) => (
           <a
             key={artifact.type}
             className="artifactLink"
@@ -476,51 +470,43 @@ function PreviewCard({
   artifact,
 }: {
   label: string;
-  artifact: Artifact | undefined;
+  artifact: Artifact;
 }) {
   const [previewFailed, setPreviewFailed] = useState(false);
 
   useEffect(() => {
     setPreviewFailed(false);
-  }, [artifact?.preview_url]);
+  }, [artifact.preview_url]);
 
   return (
     <article className="previewCard">
       <div className="previewHeader">
         <h3>{label}</h3>
-        {artifact ? (
-          <a
-            className="iconButton"
-            href={apiUrl(artifact.download_url)}
-            title={`Скачать ${artifact.filename}`}
-            aria-label={`Скачать ${artifact.filename}`}
-          >
-            <Download size={16} />
-          </a>
-        ) : null}
+        <a
+          className="iconButton"
+          href={apiUrl(artifact.download_url)}
+          title={`Скачать ${artifact.filename}`}
+          aria-label={`Скачать ${artifact.filename}`}
+        >
+          <Download size={16} />
+        </a>
       </div>
       <div className="previewFrame">
-        {artifact && !previewFailed ? (
+        {!previewFailed ? (
           <img
             src={apiUrl(artifact.preview_url)}
             alt={`${label}: ${artifact.filename}`}
             onError={() => setPreviewFailed(true)}
           />
-        ) : artifact ? (
+        ) : (
           <div className="previewFallback">
             <FileImage size={30} />
             <strong>Предпросмотр недоступен</strong>
             <span>{artifact.mime_type}</span>
           </div>
-        ) : (
-          <div className="previewFallback">
-            <FileImage size={30} />
-            <strong>Артефакт не создан</strong>
-            <span>{label}</span>
-          </div>
         )}
       </div>
-      {artifact ? <p className="artifactName">{artifact.filename}</p> : null}
+      <p className="artifactName">{artifact.filename}</p>
     </article>
   );
 }
@@ -577,6 +563,15 @@ function Metric({ label, value }: { label: string; value: number }) {
 
 function artifactOf(image: ImageResult, type: ArtifactType): Artifact | undefined {
   return image.artifacts.find((artifact) => artifact.type === type);
+}
+
+function orderedArtifacts(
+  image: ImageResult,
+): Array<{ artifact: Artifact; label: string }> {
+  return ARTIFACT_ORDER.flatMap((type) => {
+    const artifact = artifactOf(image, type);
+    return artifact ? [{ artifact, label: ARTIFACT_LABELS[type] }] : [];
+  });
 }
 
 function formatBytes(value: number): string {

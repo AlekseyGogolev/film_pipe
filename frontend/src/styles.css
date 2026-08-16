@@ -113,11 +113,7 @@ a {
 
 .controlBand {
   display: grid;
-  grid-template-columns:
-    minmax(220px, 1fr) auto minmax(230px, auto) minmax(260px, auto)
-    minmax(220px, 0.85fr) auto;
   gap: 12px;
-  align-items: end;
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -125,13 +121,32 @@ a {
   box-shadow: var(--shadow);
 }
 
+.controlRow {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  align-items: end;
+}
+
+.controlRowPrimary {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.controlRowOptions {
+  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
+}
+
 .fileControl,
-.modeGroup,
+.choiceGroup,
 .previewHeader,
 .artifactStrip {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.fileControl {
+  min-width: 0;
 }
 
 .fileInput {
@@ -143,7 +158,7 @@ a {
 .downloadButton,
 .artifactLink,
 .iconButton,
-.modeButton {
+.choiceButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -169,7 +184,8 @@ a {
 }
 
 .fileButton {
-  width: 100%;
+  flex: 0 1 260px;
+  min-width: 0;
 }
 
 .iconButton {
@@ -204,7 +220,7 @@ a {
 .iconButton:hover,
 .downloadButton:hover,
 .artifactLink:hover,
-.modeButton:not(:disabled):hover {
+.choiceButton:not(:disabled):hover {
   border-color: var(--teal);
   background: #f0faf8;
 }
@@ -215,13 +231,14 @@ a {
 }
 
 button:disabled,
-.modeButton:disabled,
+.choiceButton:disabled,
 .primaryButton:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
 
-.modeGroup {
+.choiceGroup {
+  flex-wrap: wrap;
   min-height: 40px;
   padding: 3px;
   border: 1px solid var(--line);
@@ -229,15 +246,24 @@ button:disabled,
   background: #eef2ec;
 }
 
-.modeButton {
-  min-width: 104px;
+.choiceButton {
+  flex: 1 1 140px;
+  min-width: 0;
   min-height: 32px;
   border-color: transparent;
   background: transparent;
   padding: 0 10px;
+  line-height: 1.15;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
-.modeButton span {
+.inputProcessingButton {
+  flex-basis: 190px;
+}
+
+.choiceButton span {
+  flex: 0 0 auto;
   display: inline-grid;
   place-items: center;
   width: 24px;
@@ -248,39 +274,22 @@ button:disabled,
   font-size: 11px;
 }
 
-.modeButton.active {
+.choiceButton.active {
   border-color: #9ec4bc;
   background: #ffffff;
   color: var(--teal-dark);
 }
 
-.promptField,
 .optionField {
   display: grid;
   gap: 5px;
   min-width: 0;
 }
 
-.promptField span,
 .optionField > span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
-}
-
-.promptField input {
-  width: 100%;
-  min-height: 40px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 0 12px;
-  color: var(--ink);
-}
-
-.promptField input:disabled {
-  color: #8b958b;
-  background: #f2f4ef;
 }
 
 .restorationGroup {
@@ -288,7 +297,7 @@ button:disabled,
 }
 
 .restorationButton {
-  min-width: 86px;
+  flex-basis: 94px;
 }
 
 .errorBanner {
@@ -418,6 +427,25 @@ button:disabled,
   display: block;
   margin-top: 2px;
   font-size: 22px;
+}
+
+.jobMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -2px 0 12px;
+}
+
+.jobMeta span {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcf8;
+  padding: 5px 9px;
+  color: #3b4c3c;
+  font-size: 12px;
+  font-weight: 750;
+  overflow-wrap: anywhere;
 }
 
 .imageRow {
@@ -563,6 +591,13 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.noArtifacts {
+  min-height: 220px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcf8;
+}
+
 .artifactName {
   margin: 9px 0 0;
   color: var(--muted);
@@ -598,18 +633,15 @@ button:disabled,
 }
 
 @media (max-width: 1060px) {
-  .controlBand,
   .workspace,
   .comparisonGrid {
     grid-template-columns: 1fr;
   }
+}
 
-  .modeGroup {
-    justify-content: stretch;
-  }
-
-  .modeButton {
-    flex: 1 1 0;
+@media (max-width: 900px) {
+  .controlRowOptions {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -628,8 +660,12 @@ button:disabled,
     padding: 10px;
   }
 
+  .controlRowPrimary {
+    grid-template-columns: 1fr;
+  }
+
   .fileControl,
-  .modeGroup {
+  .choiceGroup {
     flex-wrap: wrap;
   }
 
@@ -640,6 +676,10 @@ button:disabled,
   .fileButton,
   .primaryButton {
     flex: 1 1 180px;
+  }
+
+  .primaryButton {
+    width: 100%;
   }
 
   .resultPane {

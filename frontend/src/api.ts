@@ -1,4 +1,4 @@
-import type { InputPolarity, Job, ProcessingMode, RestorationMode } from "./types";
+import type { InputProcessingMode, Job, RestorationMode } from "./types";
 
 const configuredBase = import.meta.env.VITE_FILMPIPE_API_BASE ?? "/api";
 export const API_BASE = configuredBase.replace(/\/$/, "");
@@ -14,18 +14,12 @@ export function apiUrl(path: string): string {
 
 export async function createJob(
   files: File[],
-  mode: ProcessingMode,
-  polarity: InputPolarity,
+  inputProcessing: InputProcessingMode,
   restoration: RestorationMode,
-  prompt?: string,
 ): Promise<Job> {
   const body = new FormData();
-  body.append("mode", mode);
-  body.append("polarity", polarity);
+  body.append("input_processing", inputProcessing);
   body.append("restoration", restoration);
-  if (prompt?.trim()) {
-    body.append("prompt", prompt.trim());
-  }
   for (const file of files) {
     body.append("files", file);
   }
