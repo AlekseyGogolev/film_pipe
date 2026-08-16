@@ -1,8 +1,15 @@
 # FilmPipe
 
-FilmPipe is a local application foundation for processing film scans. The current MVP has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a local HTTP API, a real B&W processing pipeline, optional AI restoration, and a minimal React/Vite frontend.
+FilmPipe is a local application foundation for processing film scans. The current MVP has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a local HTTP API, a B&W negative-to-positive path, already-positive input handling, optional AI restoration, and a minimal React/Vite frontend.
 
-The default processing pipeline is built from job options. Negative inputs are decoded, converted to positive, tone-normalized, written as a 16-bit TIFF `positive` artifact, then optionally restored. Already-positive scans use `polarity=positive`, which omits negative conversion and tone normalization from the execution plan.
+The processing pipeline is built from two independent job options:
+
+```text
+input_processing = already_positive | bw_negative
+restoration      = off | telea | lama
+```
+
+Already-positive inputs are decoded as the working positive without inversion, B&W preparation, or a synthetic public `positive` artifact. B&W negative inputs are decoded, converted to positive, tone-normalized, written as a 16-bit TIFF `positive` artifact, then optionally restored.
 
 ## Requirements
 
@@ -41,7 +48,7 @@ python - <<'PY'
 from pathlib import Path
 import cv2
 import numpy as np
-from filmpipe import ProcessingMode, ProcessingOptions, RestorationMode, process_image
+from filmpipe import InputProcessingMode, ProcessingOptions, RestorationMode, process_image
 
 source = Path("sample_negative.tiff")
 positive = np.tile(np.linspace(0, 65535, 64, dtype=np.uint16), (32, 1))
@@ -53,7 +60,7 @@ source.write_bytes(encoded.tobytes())
 result = process_image(
     source,
     options=ProcessingOptions(
-        mode=ProcessingMode.BW,
+        input_processing=InputProcessingMode.BW_NEGATIVE,
         restoration=RestorationMode.OFF,
     ),
 )
@@ -123,16 +130,19 @@ http://127.0.0.1:8000/health
 
 ### API Contract
 
-Create a B&W processing job with multipart form data:
+Create a processing job with multipart form data:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/jobs \
-  -F "mode=bw" \
-  -F "polarity=negative" \
+  -F "input_processing=bw_negative" \
   -F "restoration=off" \
   -F "files=@scan_001.tiff" \
   -F "files=@scan_002.tiff"
 ```
+
+Use `input_processing=already_positive` for scans that are already positive.
+The default request options are `input_processing=bw_negative` and
+`restoration=off`.
 
 `POST /jobs` processes synchronously for the MVP and returns the final job state. Frontend polling should use:
 
@@ -146,10 +156,8 @@ Job responses use API concepts only:
 ```text
 id
 status
-mode
-polarity
+input_processing
 restoration
-selected_modes
 images[]
 errors[]
 download_url
@@ -184,9 +192,9 @@ Batch ZIP export:
 GET /jobs/{job_id}/download
 ```
 
-The ZIP contains existing generated result artifacts such as `positive`; immutable `original` files are available per image but are not included in batch result ZIPs.
+The ZIP contains existing generated result artifacts such as `positive` and `restored`; immutable `original` files are available per image but are not included in batch result ZIPs. For `already_positive + off`, no generated artifact exists, so the batch ZIP endpoint returns `404`.
 
-Only `mode=bw` is implemented for normal processing. Use `polarity=negative` for negative-to-positive conversion or `polarity=positive` for already-positive input. Legacy `mode=off` is still accepted as an alias for already-positive input. `colorize` and `creative` currently return a clear `400` response.
+Requests with unknown form fields receive a clear `400` response. The API accepts only `files`, `input_processing`, and `restoration` for job creation.
 
 ## Local Frontend
 
@@ -230,9 +238,9 @@ MVP input bit depths:
 - 8-bit unsigned grayscale or RGB/RGBA
 - 16-bit unsigned grayscale or RGB/RGBA
 
-RGB/RGBA inputs are converted to grayscale for the B&W pipeline. JPEG is accepted for convenience, but TIFF/PNG are preferred because FilmPipe should avoid unnecessary lossy compression.
+RGB/RGBA inputs are converted to grayscale only for the `bw_negative` pipeline. `already_positive` preserves decoded channels for the internal working positive. JPEG is accepted for convenience, but TIFF/PNG are preferred because FilmPipe should avoid unnecessary lossy compression.
 
-Internal representation is processing-local: a 2D NumPy `float32` grayscale image normalized to `0.0..1.0`. Domain/API models do not expose NumPy or OpenCV types.
+Internal image representations are processing-local. The `bw_negative` path uses a 2D NumPy `float32` grayscale image normalized to `0.0..1.0`; `already_positive` keeps the decoded dtype/channels as the working positive. Domain/API models do not expose NumPy or OpenCV types.
 
 Output `positive` artifacts are 16-bit TIFF files.
 
@@ -247,12 +255,23 @@ data/jobs/{job_id}/{image_id}/restored/{safe_stem}_restored.tiff
 ```
 
 `original` artifacts are immutable copies of uploaded files. `positive`
-artifacts are generated separately and do not replace originals. `restored`
-artifacts are optional derivatives and never replace `positive`. Batch ZIP
-downloads include generated result artifacts such as `positive` and `restored`
-and exclude immutable originals.
+artifacts are generated for B&W negative conversion and do not replace
+originals. `restored` artifacts are optional derivatives. Batch ZIP downloads
+include generated result artifacts such as `positive` and `restored` and exclude
+immutable originals.
 
-Current negative-input B&W algorithm:
+Public artifact semantics:
+
+| Input Processing | Restoration | Public Artifacts |
+| --- | --- | --- |
+| `already_positive` | `off` | `original` |
+| `already_positive` | `telea` | `original`, `restored` |
+| `already_positive` | `lama` | `original`, `restored` |
+| `bw_negative` | `off` | `original`, `positive` |
+| `bw_negative` | `telea` | `original`, `positive`, `restored` |
+| `bw_negative` | `lama` | `original`, `positive`, `restored` |
+
+`bw_negative` execution plan:
 
 ```text
 OpenCV decode
@@ -270,9 +289,19 @@ optional restoration: off | TELEA | LaMa
 
 If the tonal range is effectively flat, normalization is skipped and the converted image is preserved.
 
-With `polarity=positive`, the default execution plan is decode → positive artifact writer → optional restoration. `NegativeConverterProcessor` and tone normalization are not added to the plan.
+`already_positive` execution plan:
 
-Restoration failures are recoverable: the `positive` artifact remains available, `restored` is omitted, and the image/job can report `partial_success`.
+```text
+OpenCV decode
+↓
+working positive
+↓
+optional restoration: off | TELEA | LaMa
+```
+
+For `already_positive`, `NegativeConverterProcessor`, `ToneNormalizerProcessor`, and `PositiveArtifactWriterProcessor` are not added to the plan.
+
+Restoration failures are recoverable: the base result remains available, `restored` is omitted, and the image/job can report `partial_success`.
 
 ## Logging
 
@@ -292,8 +321,8 @@ Log records include `job_id`, `image_id`, and `processor` context. User-facing e
   repeated real batch on this local environment, so no background queue was
   added for the MVP.
 - FilmPipe does not auto-detect negative versus positive scans; choose
-  `Input: Negative` for negatives or `Input: Positive` for already-positive
-  inputs.
+  `Input Processing: Negative -> Positive` for negatives or `Already Positive`
+  for already-positive inputs.
 - Preview PNGs are display representations. Downloads remain the stored
   artifact format and bit depth.
 - No film border detection, frame cropping, rotation, colorization, or creative processing is implemented.

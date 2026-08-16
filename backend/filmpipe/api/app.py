@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
 import re
@@ -20,13 +21,14 @@ from filmpipe.domain.models import (
 from filmpipe.processing.preview import PREVIEW_MIME_TYPE, PreviewRenderError, render_preview_png
 
 try:
-    from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+    from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
     from fastapi.responses import Response
 except ImportError:  # pragma: no cover - exercised only without installed deps
     FastAPI = None  # type: ignore[assignment]
     File = None  # type: ignore[assignment]
     Form = None  # type: ignore[assignment]
     HTTPException = None  # type: ignore[assignment]
+    Request = None  # type: ignore[assignment]
     UploadFile = None  # type: ignore[assignment]
     Response = None  # type: ignore[assignment]
 
@@ -62,20 +64,17 @@ def create_app(
 
     @app.post("/jobs", status_code=201)
     async def create_job(
+        request: Request,
         files: list[UploadFile] = File(...),
-        input_processing: str | None = Form(None),
+        input_processing: str = Form(InputProcessingMode.BW_NEGATIVE.value),
         restoration: str = Form(RestorationMode.OFF.value),
-        mode: str | None = Form(None),
-        polarity: str | None = Form(None),
     ) -> dict[str, object]:
         if not files:
             raise HTTPException(status_code=400, detail="Добавьте хотя бы один файл.")
 
-        input_processing_mode = _resolve_input_processing(
-            input_processing=input_processing,
-            legacy_mode=mode,
-            legacy_polarity=polarity,
-        )
+        form = await request.form()
+        _reject_unknown_job_fields(form.keys())
+        input_processing_mode = _parse_input_processing(input_processing)
         restoration_mode = _parse_restoration_mode(restoration)
         options = ProcessingOptions(
             input_processing=input_processing_mode,
@@ -214,39 +213,19 @@ def _error_response(error: ProcessingError) -> dict[str, object]:
     }
 
 
-def _resolve_input_processing(
-    *,
-    input_processing: str | None,
-    legacy_mode: str | None,
-    legacy_polarity: str | None,
-) -> InputProcessingMode:
-    if input_processing is not None:
-        return _parse_input_processing(input_processing)
-
-    if legacy_mode is None and legacy_polarity is None:
-        return InputProcessingMode.BW_NEGATIVE
-
-    mode = (legacy_mode or "bw").strip().lower()
-    if mode == "off":
-        return InputProcessingMode.ALREADY_POSITIVE
-    if mode != "bw":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Legacy mode is no longer part of the API. "
-                "Use input_processing=already_positive or input_processing=bw_negative."
-            ),
-        )
-
-    polarity = (legacy_polarity or "negative").strip().lower()
-    if polarity == "negative":
-        return InputProcessingMode.BW_NEGATIVE
-    if polarity == "positive":
-        return InputProcessingMode.ALREADY_POSITIVE
+def _reject_unknown_job_fields(field_names: Iterable[str]) -> None:
+    allowed_fields = {"files", "input_processing", "restoration"}
+    unknown_fields = sorted(set(field_names) - allowed_fields)
+    if not unknown_fields:
+        return
 
     raise HTTPException(
         status_code=400,
-        detail="Legacy polarity must be one of: negative, positive.",
+        detail=(
+            "Unknown form fields: "
+            f"{', '.join(unknown_fields)}. "
+            "Allowed fields are: files, input_processing, restoration."
+        ),
     )
 
 

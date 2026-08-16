@@ -1,5 +1,8 @@
 # FilmPipe Refactor Handoff - Agent 1
 
+Agent 3 note: this file records the intermediate state after Agent 1. The final
+contract is documented in `docs/refactor_final_audit.md`.
+
 Agent 1 completed the backend/domain/API refactor toward the new runtime model:
 
 ```text
@@ -71,15 +74,6 @@ Removed from response:
 - `mode`
 - `polarity`
 - `selected_modes`
-
-Transitional compatibility:
-
-- If `input_processing` is absent, legacy form fields are mapped at the API boundary only.
-- `mode=off` maps to `already_positive`.
-- `mode=bw&polarity=positive` maps to `already_positive`.
-- `mode=bw&polarity=negative` maps to `bw_negative`.
-- unsupported legacy modes such as `colorize` and `creative` return 400.
-- legacy `prompt` is not represented in domain/application/engine.
 
 Agent 2 should send only `input_processing` and `restoration`.
 
@@ -207,8 +201,7 @@ Note: system `python3 -m pytest` failed because pytest is not installed outside 
 
 ## Risks / Questions For Agent 2
 
-- Frontend must migrate form submission to `input_processing` and stop sending `mode`, `polarity`, and `prompt`.
-- Frontend types must read `job.input_processing`; `job.mode`, `job.polarity`, and `job.selected_modes` are gone from the backend response.
+- Frontend must migrate form submission to `input_processing` and `restoration`.
+- Frontend types must read `job.input_processing`.
 - UI artifact rendering should use the matrix above. For `already_positive + off`, show `Original` only or treat it as the base result; do not expect a public `positive`.
-- Existing README/frontend docs still contain legacy wording from earlier work. Agent 3 should do the final docs/legacy sweep after Agent 2 migrates the UI.
-- The API legacy mapper is intentionally transitional. After the frontend is migrated, Agent 3 can decide whether to remove it or keep it for short-term compatibility.
+- Existing README/frontend docs still contain stale wording from earlier work. Agent 3 should do the final docs sweep after Agent 2 migrates the UI.

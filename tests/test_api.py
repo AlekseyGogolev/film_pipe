@@ -396,19 +396,19 @@ def test_invalid_input_processing_returns_clear_400(tmp_path):
     assert "Input processing must be one of" in response.json()["detail"]
 
 
-def test_legacy_mode_and_polarity_map_to_new_contract(tmp_path):
+def test_unknown_job_form_field_returns_clear_400(tmp_path):
     client = _client(tmp_path)
     response = client.post_multipart(
         "/jobs",
-        data={"mode": "bw", "polarity": "positive", "restoration": "off"},
+        data={"unexpected": "value"},
         files=[("files", _positive_upload(tmp_path))],
     )
 
-    assert response.status_code == 201
-    job = response.json()
-    assert job["status"] == "success"
-    assert job["input_processing"] == "already_positive"
-    assert job["restoration"] == "off"
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert "Unknown form fields" in detail
+    assert "unexpected" in detail
+    assert "files, input_processing, restoration" in detail
 
 
 def test_already_positive_off_returns_only_original_artifact(tmp_path):
@@ -483,13 +483,13 @@ def test_invalid_restoration_value_returns_clear_400(tmp_path):
     assert "Restoration must be one of" in response.json()["detail"]
 
 
-def test_invalid_legacy_polarity_value_returns_clear_400(tmp_path):
+def test_missing_input_processing_defaults_to_bw_negative(tmp_path):
     client = _client(tmp_path)
     response = client.post_multipart(
         "/jobs",
-        data={"mode": "bw", "polarity": "sideways", "restoration": "off"},
+        data={"restoration": "off"},
         files=[("files", _negative_upload(tmp_path))],
     )
 
-    assert response.status_code == 400
-    assert "Legacy polarity must be one of" in response.json()["detail"]
+    assert response.status_code == 201
+    assert response.json()["input_processing"] == "bw_negative"

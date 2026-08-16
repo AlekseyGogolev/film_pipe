@@ -55,6 +55,6 @@ The active controls are file selection, process action, Input Processing, and Re
 
 The UI renders only public artifacts returned by the API, ordered as `original`, `positive`, `restored`. Already-positive jobs therefore show `Original` and, when restoration runs successfully, `Restored`; they do not show an empty or synthetic `Positive` card.
 
-## Known UI Limitation
+## Preview / Download
 
-Browsers generally do not render TIFF in `<img>`. The UI attempts `preview_url` and shows a fallback with download actions when the browser cannot display `image/tiff`.
+Artifact downloads keep the stored format and bit depth, such as 16-bit TIFF for generated positives. Artifact previews use the API-provided `preview_url`, which returns browser-friendly PNG bytes.

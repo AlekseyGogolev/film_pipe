@@ -1,5 +1,8 @@
 # FilmPipe Refactor Handoff - Agent 2
 
+Agent 3 note: this file records the intermediate state after Agent 2. The final
+contract is documented in `docs/refactor_final_audit.md`.
+
 Agent 2 completed the frontend/API migration to Agent 1's runtime contract:
 
 ```text
@@ -37,17 +40,9 @@ restoration=off|telea|lama
 files=(binary)
 ```
 
-It no longer appends:
-
-```text
-mode
-polarity
-prompt
-```
-
 Payload audit through headless Chrome/CDP intercepted real frontend submits:
 
-| Case | input_processing | restoration | has file | legacy fields |
+| Case | input_processing | restoration | has file | extra fields |
 | --- | --- | --- | --- | --- |
 | `already_positive + off` | `already_positive` | `off` | yes | no |
 | `already_positive + lama` | `already_positive` | `lama` | yes | no |
@@ -62,14 +57,6 @@ Payload audit through headless Chrome/CDP intercepted real frontend submits:
 job.input_processing
 job.restoration
 ```
-
-Removed from frontend job types:
-
-- `job.mode`;
-- `job.polarity`;
-- `job.selected_modes`;
-- legacy `ProcessingMode`;
-- legacy `InputPolarity`.
 
 Current public frontend artifact types are:
 
@@ -179,11 +166,6 @@ http://127.0.0.1:5174/
 
 ## Notes For Agent 3
 
-- Backend transitional legacy mapping for `mode/polarity` still exists by Agent
-  1 design; frontend no longer depends on it.
-- Agent 3 should perform the full legacy sweep across root README, older docs,
+- Agent 3 should perform the full contract sweep across root README, older docs,
   handoff files, and tests.
-- Do not reintroduce colorize/creative/prompt as current UI behavior during the
-  cleanup pass.
-- Agent 3 should decide whether to keep or remove the API legacy mapper after
-  final regression.
+- Do not reintroduce colorize/creative behavior during the cleanup pass.

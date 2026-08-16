@@ -30,6 +30,11 @@ TELEA и LaMa после исправления mask работают прием
 
 Цель этой задачи — **аккуратно перенести уже доказанный подход в основной FilmPipe как optional processing stage**.
 
+Статус после refactor: production runtime дополнительно разделяет
+`input_processing=already_positive|bw_negative` и `restoration=off|telea|lama`.
+Restoration получает internal `working_positive`, независимо от того, был ли он
+получен из B&W-негатива или из уже позитивного input.
+
 ---
 
 # Целевая production-схема
@@ -54,7 +59,10 @@ Restoration             [optional]
 Clean Master / Restored
 ```
 
-AI restoration не является обязательным для получения успешного `positive`.
+AI restoration не является обязательным для получения базового результата. Для
+`bw_negative` базовым публичным результатом является `positive`; для
+`already_positive` базой является загруженный `original` плюс internal
+`working_positive`.
 
 ---
 
@@ -101,10 +109,10 @@ positive
 → restored
 ```
 
-Для текущего MVP:
+Финальный default текущего MVP:
 
 ```text
-default = lama
+default = off
 ```
 
 Но архитектура не должна считать LaMa специальным случаем.
@@ -227,22 +235,19 @@ final =
 
 # Артефакты
 
-При `restoration=off`:
+Публичные артефакты зависят от `input_processing`:
 
-```text
-original
-positive
-```
+| Input Processing | Restoration | Public Artifacts |
+| --- | --- | --- |
+| `already_positive` | `off` | `original` |
+| `already_positive` | `telea` | `original`, `restored` |
+| `already_positive` | `lama` | `original`, `restored` |
+| `bw_negative` | `off` | `original`, `positive` |
+| `bw_negative` | `telea` | `original`, `positive`, `restored` |
+| `bw_negative` | `lama` | `original`, `positive`, `restored` |
 
-При успешном restoration:
-
-```text
-original
-positive
-restored
-```
-
-`positive` никогда не заменяется `restored`.
+`positive` никогда не заменяется `restored`. Для `already_positive` публичный
+`positive` не создаётся искусственно.
 
 `restored` является отдельным производным artifact.
 
@@ -261,21 +266,21 @@ Restoration является optional stage.
 Если:
 
 ```text
-Positive ✓
+Working Positive ✓
 Detector ✗
 ```
 
 или:
 
 ```text
-Positive ✓
+Working Positive ✓
 Detector ✓
 Restorer ✗
 ```
 
 то:
 
-- `positive` остаётся доступен;
+- базовый результат остаётся доступен;
 - image НЕ становится полностью failed;
 - ошибка restoration фиксируется;
 - image/job получают существующую семантику `partial_success`, если она применима;
@@ -288,11 +293,10 @@ Restorer ✗
 
 # API
 
-Расширить существующий `POST /jobs` минимально необходимой настройкой restoration.
-
-Например:
+`POST /jobs` принимает independent runtime options:
 
 ```text
+input_processing=already_positive|bw_negative
 restoration=off|telea|lama
 ```
 
@@ -504,9 +508,9 @@ negative
 Во всех случаях:
 
 - original сохраняется;
-- positive сохраняется;
+- базовый результат сохраняется;
 - restoration optional;
-- failure AI не уничтожает positive;
+- failure AI не уничтожает базовый результат;
 - restored является отдельным artifact;
 - изменения вне restoration mask запрещены;
 - single и batch продолжают работать;

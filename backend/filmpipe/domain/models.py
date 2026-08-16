@@ -25,8 +25,6 @@ class ArtifactType(str, Enum):
     ORIGINAL = "original"
     POSITIVE = "positive"
     RESTORED = "restored"
-    COLORIZED = "colorized"
-    CREATIVE = "creative"
 
 
 class ProcessingStatus(str, Enum):
