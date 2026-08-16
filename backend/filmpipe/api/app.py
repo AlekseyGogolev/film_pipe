@@ -11,10 +11,11 @@ from filmpipe.domain.models import (
     Artifact,
     ArtifactType,
     ImageProcessingResult,
+    InputProcessingMode,
     ProcessingError,
     ProcessingJob,
-    ProcessingMode,
     ProcessingOptions,
+    RestorationMode,
 )
 from filmpipe.processing.preview import PREVIEW_MIME_TYPE, PreviewRenderError, render_preview_png
 
@@ -62,18 +63,24 @@ def create_app(
     @app.post("/jobs", status_code=201)
     async def create_job(
         files: list[UploadFile] = File(...),
-        mode: ProcessingMode = Form(ProcessingMode.BW),
-        prompt: str | None = Form(None),
+        input_processing: str | None = Form(None),
+        restoration: str = Form(RestorationMode.OFF.value),
+        mode: str | None = Form(None),
+        polarity: str | None = Form(None),
     ) -> dict[str, object]:
-        if mode != ProcessingMode.BW:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Режим {mode.value} пока не реализован в MVP.",
-            )
         if not files:
             raise HTTPException(status_code=400, detail="Добавьте хотя бы один файл.")
 
-        options = ProcessingOptions(mode=mode, prompt=prompt)
+        input_processing_mode = _resolve_input_processing(
+            input_processing=input_processing,
+            legacy_mode=mode,
+            legacy_polarity=polarity,
+        )
+        restoration_mode = _parse_restoration_mode(restoration)
+        options = ProcessingOptions(
+            input_processing=input_processing_mode,
+            restoration=restoration_mode,
+        )
         with TemporaryDirectory(prefix="filmpipe-upload-") as temporary_dir:
             upload_paths: list[Path] = []
             temporary_root = Path(temporary_dir)
@@ -86,7 +93,7 @@ def create_app(
                 await upload.close()
                 upload_paths.append(upload_path)
 
-            job = service.process(upload_paths, options=options, selected_modes=[mode])
+            job = service.process(upload_paths, options=options)
 
         registry.save(job)
         return _job_response(job)
@@ -167,8 +174,8 @@ def _job_response(job: ProcessingJob) -> dict[str, object]:
     return {
         "id": job.id,
         "status": job.status.value,
-        "mode": job.options.mode.value,
-        "selected_modes": [mode.value for mode in job.selected_modes],
+        "input_processing": job.options.input_processing.value,
+        "restoration": job.options.restoration.value,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "images": [_image_response(job.id, result) for result in job.results],
@@ -205,6 +212,66 @@ def _error_response(error: ProcessingError) -> dict[str, object]:
         "recoverable": error.recoverable,
         "exception_type": error.exception_type,
     }
+
+
+def _resolve_input_processing(
+    *,
+    input_processing: str | None,
+    legacy_mode: str | None,
+    legacy_polarity: str | None,
+) -> InputProcessingMode:
+    if input_processing is not None:
+        return _parse_input_processing(input_processing)
+
+    if legacy_mode is None and legacy_polarity is None:
+        return InputProcessingMode.BW_NEGATIVE
+
+    mode = (legacy_mode or "bw").strip().lower()
+    if mode == "off":
+        return InputProcessingMode.ALREADY_POSITIVE
+    if mode != "bw":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Legacy mode is no longer part of the API. "
+                "Use input_processing=already_positive or input_processing=bw_negative."
+            ),
+        )
+
+    polarity = (legacy_polarity or "negative").strip().lower()
+    if polarity == "negative":
+        return InputProcessingMode.BW_NEGATIVE
+    if polarity == "positive":
+        return InputProcessingMode.ALREADY_POSITIVE
+
+    raise HTTPException(
+        status_code=400,
+        detail="Legacy polarity must be one of: negative, positive.",
+    )
+
+
+def _parse_input_processing(value: str) -> InputProcessingMode:
+    normalized = value.strip().lower()
+    try:
+        return InputProcessingMode(normalized)
+    except ValueError as exc:
+        allowed = ", ".join(mode.value for mode in InputProcessingMode)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Input processing must be one of: {allowed}.",
+        ) from exc
+
+
+def _parse_restoration_mode(value: str) -> RestorationMode:
+    normalized = value.strip().lower()
+    try:
+        return RestorationMode(normalized)
+    except ValueError as exc:
+        allowed = ", ".join(mode.value for mode in RestorationMode)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Restoration must be one of: {allowed}.",
+        ) from exc
 
 
 def _get_job(registry: InMemoryJobRegistry, job_id: str) -> ProcessingJob:

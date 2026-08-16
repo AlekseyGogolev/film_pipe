@@ -1,11 +1,24 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Any
+
 from filmpipe.domain.models import ArtifactType, ImageProcessingResult, ProcessingOptions, ProcessingStatus
-from filmpipe.domain.processor import ProcessingContext
+from filmpipe.domain.processor import ProcessingContext, ProcessorResult
 from filmpipe.infrastructure.logging import get_logger, setup_logging
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.pipeline import ProcessingPipeline
 from filmpipe.processing.processors import FailingProcessor, PositiveArtifactStubProcessor
+
+
+@dataclass
+class WorkingPositiveStubProcessor:
+    name: str = "working_positive_stub"
+    optional: bool = False
+
+    def process(self, image: Any, context: ProcessingContext) -> ProcessorResult:
+        context.working_positive = image
+        return ProcessorResult.success(image=image)
 
 
 def _context(tmp_path, processors):
@@ -69,4 +82,20 @@ def test_pipeline_optional_failure_preserves_positive_as_partial_success(tmp_pat
 
     assert output.status == ProcessingStatus.PARTIAL_SUCCESS
     assert output.artifact(ArtifactType.POSITIVE) is not None
+    assert output.errors[0].recoverable is True
+
+
+def test_pipeline_optional_failure_preserves_working_positive_as_partial_success(tmp_path):
+    source, context, result, pipeline = _context(
+        tmp_path,
+        [
+            WorkingPositiveStubProcessor(),
+            FailingProcessor(name="restoration_stub", optional=True),
+        ],
+    )
+
+    output = pipeline.run(source, context, result)
+
+    assert output.status == ProcessingStatus.PARTIAL_SUCCESS
+    assert output.artifact(ArtifactType.POSITIVE) is None
     assert output.errors[0].recoverable is True

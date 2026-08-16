@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 import json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -11,14 +13,23 @@ from zipfile import ZipFile
 import anyio
 import cv2
 import numpy as np
+import pytest
 
 from filmpipe.api.app import create_app
 from filmpipe.application.jobs import InMemoryJobRegistry, JobService
+from filmpipe.domain.models import (
+    ArtifactType,
+    InputProcessingMode,
+    ProcessingOptions,
+    RestorationMode,
+)
+from filmpipe.domain.processor import ProcessingContext, ProcessorResult
 from filmpipe.infrastructure.logging import setup_logging
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.pipeline import ProcessingPipeline
 from filmpipe.processing.processors import (
-    DecodeImageProcessor,
+    DecodeBWImageProcessor,
+    DecodePositiveImageProcessor,
     FailingProcessor,
     NegativeConverterProcessor,
     PositiveArtifactWriterProcessor,
@@ -132,21 +143,26 @@ def _client(tmp_path, *, pipeline_factory=None) -> ASGITestClient:
     return ASGITestClient(app)
 
 
-def _default_test_pipeline() -> ProcessingPipeline:
-    return ProcessingPipeline(
-        [
-            DecodeImageProcessor(),
+def _default_test_pipeline(options: ProcessingOptions | None = None) -> ProcessingPipeline:
+    options = options or ProcessingOptions()
+    if options.input_processing == InputProcessingMode.ALREADY_POSITIVE:
+        processors = [DecodePositiveImageProcessor()]
+    else:
+        processors = [
+            DecodeBWImageProcessor(),
             NegativeConverterProcessor(),
             ToneNormalizerProcessor(),
             PositiveArtifactWriterProcessor(),
         ]
-    )
+    if options.restoration != RestorationMode.OFF:
+        processors.append(RestoredArtifactStubProcessor())
+    return ProcessingPipeline(processors)
 
 
 def _pipeline_with_optional_failure() -> ProcessingPipeline:
     return ProcessingPipeline(
         [
-            DecodeImageProcessor(),
+            DecodeBWImageProcessor(),
             NegativeConverterProcessor(),
             ToneNormalizerProcessor(),
             PositiveArtifactWriterProcessor(),
@@ -155,8 +171,46 @@ def _pipeline_with_optional_failure() -> ProcessingPipeline:
     )
 
 
+def _already_positive_pipeline_with_optional_failure() -> ProcessingPipeline:
+    return ProcessingPipeline(
+        [
+            DecodePositiveImageProcessor(),
+            FailingProcessor(name="restoration_stub", optional=True),
+        ]
+    )
+
+
+@dataclass
+class RestoredArtifactStubProcessor:
+    name: str = "restoration_stub"
+    optional: bool = True
+
+    def process(self, image: Any, context: ProcessingContext) -> ProcessorResult:
+        if context.working_positive is None:
+            raise RuntimeError("missing working positive")
+
+        with TemporaryDirectory(prefix="filmpipe-test-restored-") as temporary_dir:
+            temporary_path = Path(temporary_dir) / "restored.tiff"
+            ok, encoded = cv2.imencode(".tiff", np.asarray(context.working_positive))
+            assert ok
+            temporary_path.write_bytes(encoded.tobytes())
+            artifact = context.artifact_store.save_artifact(
+                context.job_id,
+                context.image_id,
+                ArtifactType.RESTORED,
+                temporary_path,
+            )
+        return ProcessorResult.success(image=image, artifacts=[artifact])
+
+
 def _negative_upload(tmp_path, filename: str = "scan.tiff") -> tuple[str, bytes, str]:
     source = write_image(tmp_path / filename, synthetic_bw_negative_16bit())
+    return (filename, source.read_bytes(), "image/tiff")
+
+
+def _positive_upload(tmp_path, filename: str = "positive.tiff") -> tuple[str, bytes, str]:
+    positive = np.tile(np.linspace(10000, 50000, 64, dtype=np.uint16), (32, 1))
+    source = write_image(tmp_path / filename, positive)
     return (filename, source.read_bytes(), "image/tiff")
 
 
@@ -205,14 +259,15 @@ def test_create_job_single_success_and_artifact_download(tmp_path):
     client = _client(tmp_path)
     response = client.post_multipart(
         "/jobs",
-        data={"mode": "bw"},
+        data={"input_processing": "bw_negative"},
         files=[("files", _negative_upload(tmp_path))],
     )
 
     assert response.status_code == 201
     job = response.json()
     assert job["status"] == "success"
-    assert job["mode"] == "bw"
+    assert job["input_processing"] == "bw_negative"
+    assert job["restoration"] == "off"
     assert len(job["images"]) == 1
 
     image = job["images"][0]
@@ -250,7 +305,7 @@ def test_batch_job_is_partial_when_one_image_fails(tmp_path):
     client = _client(tmp_path)
     response = client.post_multipart(
         "/jobs",
-        data={"mode": "bw"},
+        data={"input_processing": "bw_negative"},
         files=[
             ("files", _negative_upload(tmp_path, "valid.tiff")),
             ("files", ("broken.png", b"not a valid image", "image/png")),
@@ -264,7 +319,7 @@ def test_batch_job_is_partial_when_one_image_fails(tmp_path):
 
     failed = job["images"][1]
     assert failed["filename"] == "broken.png"
-    assert failed["errors"][0]["stage"] == "decode"
+    assert failed["errors"][0]["stage"] == "decode_bw"
     assert not any(artifact["type"] == "positive" for artifact in failed["artifacts"])
     failed_original = next(
         artifact for artifact in failed["artifacts"] if artifact["type"] == "original"
@@ -288,7 +343,7 @@ def test_optional_failure_after_positive_preserves_artifact(tmp_path):
     client = _client(tmp_path, pipeline_factory=_pipeline_with_optional_failure)
     response = client.post_multipart(
         "/jobs",
-        data={"mode": "bw"},
+        data={"input_processing": "bw_negative"},
         files=[("files", _negative_upload(tmp_path))],
     )
 
@@ -308,13 +363,133 @@ def test_optional_failure_after_positive_preserves_artifact(tmp_path):
     assert archive.status_code == 200
 
 
-def test_unsupported_mode_returns_clear_400(tmp_path):
+def test_optional_failure_after_already_positive_preserves_base_result(tmp_path):
+    client = _client(
+        tmp_path,
+        pipeline_factory=_already_positive_pipeline_with_optional_failure,
+    )
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "already_positive", "restoration": "lama"},
+        files=[("files", _positive_upload(tmp_path))],
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    image = job["images"][0]
+    assert job["status"] == "partial_success"
+    assert image["status"] == "partial_success"
+    assert image["errors"][0]["stage"] == "restoration_stub"
+    artifacts = {artifact["type"] for artifact in image["artifacts"]}
+    assert artifacts == {"original"}
+
+
+def test_invalid_input_processing_returns_clear_400(tmp_path):
     client = _client(tmp_path)
     response = client.post_multipart(
         "/jobs",
-        data={"mode": "colorize"},
+        data={"input_processing": "colorize"},
         files=[("files", _negative_upload(tmp_path))],
     )
 
     assert response.status_code == 400
-    assert "пока не реализован" in response.json()["detail"]
+    assert "Input processing must be one of" in response.json()["detail"]
+
+
+def test_legacy_mode_and_polarity_map_to_new_contract(tmp_path):
+    client = _client(tmp_path)
+    response = client.post_multipart(
+        "/jobs",
+        data={"mode": "bw", "polarity": "positive", "restoration": "off"},
+        files=[("files", _positive_upload(tmp_path))],
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["status"] == "success"
+    assert job["input_processing"] == "already_positive"
+    assert job["restoration"] == "off"
+
+
+def test_already_positive_off_returns_only_original_artifact(tmp_path):
+    client = _client(tmp_path)
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "already_positive", "restoration": "off"},
+        files=[("files", _positive_upload(tmp_path))],
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert job["status"] == "success"
+
+    image = job["images"][0]
+    assert {artifact["type"] for artifact in image["artifacts"]} == {"original"}
+
+
+@pytest.mark.parametrize(
+    ("input_processing", "restoration", "expected_artifacts"),
+    [
+        ("already_positive", "off", {"original"}),
+        ("already_positive", "telea", {"original", "restored"}),
+        ("already_positive", "lama", {"original", "restored"}),
+        ("bw_negative", "off", {"original", "positive"}),
+        ("bw_negative", "telea", {"original", "positive", "restored"}),
+        ("bw_negative", "lama", {"original", "positive", "restored"}),
+    ],
+)
+def test_public_artifact_matrix(tmp_path, input_processing, restoration, expected_artifacts):
+    client = _client(tmp_path)
+    upload = (
+        _positive_upload(tmp_path)
+        if input_processing == "already_positive"
+        else _negative_upload(tmp_path)
+    )
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": input_processing, "restoration": restoration},
+        files=[("files", upload)],
+    )
+
+    assert response.status_code == 201
+    image = response.json()["images"][0]
+    assert {artifact["type"] for artifact in image["artifacts"]} == expected_artifacts
+
+
+def test_restoration_values_are_accepted_and_serialized(tmp_path):
+    client = _client(tmp_path)
+
+    for restoration in ("off", "telea", "lama"):
+        response = client.post_multipart(
+            "/jobs",
+            data={"input_processing": "bw_negative", "restoration": restoration},
+            files=[("files", _negative_upload(tmp_path, f"{restoration}.tiff"))],
+        )
+
+        assert response.status_code == 201
+        job = response.json()
+        assert job["restoration"] == restoration
+
+
+def test_invalid_restoration_value_returns_clear_400(tmp_path):
+    client = _client(tmp_path)
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "bw_negative", "restoration": "magic"},
+        files=[("files", _negative_upload(tmp_path))],
+    )
+
+    assert response.status_code == 400
+    assert "Restoration must be one of" in response.json()["detail"]
+
+
+def test_invalid_legacy_polarity_value_returns_clear_400(tmp_path):
+    client = _client(tmp_path)
+    response = client.post_multipart(
+        "/jobs",
+        data={"mode": "bw", "polarity": "sideways", "restoration": "off"},
+        files=[("files", _negative_upload(tmp_path))],
+    )
+
+    assert response.status_code == 400
+    assert "Legacy polarity must be one of" in response.json()["detail"]

@@ -1,12 +1,14 @@
 """Concrete processors for the FilmPipe processing pipeline."""
 
 from filmpipe.processing.processors.images import (
-    DecodeImageProcessor,
+    DecodeBWImageProcessor,
+    DecodePositiveImageProcessor,
     NegativeConverterProcessor,
     PositiveArtifactWriterProcessor,
     SUPPORTED_IMAGE_SUFFIXES,
     ToneNormalizerProcessor,
 )
+from filmpipe.processing.restoration import AIRestorationProcessor
 from filmpipe.processing.processors.stubs import (
     FailingProcessor,
     NoopProcessor,
@@ -14,7 +16,9 @@ from filmpipe.processing.processors.stubs import (
 )
 
 __all__ = [
-    "DecodeImageProcessor",
+    "DecodeBWImageProcessor",
+    "DecodePositiveImageProcessor",
+    "AIRestorationProcessor",
     "FailingProcessor",
     "NegativeConverterProcessor",
     "NoopProcessor",

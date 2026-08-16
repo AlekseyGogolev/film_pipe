@@ -10,13 +10,13 @@ import numpy.typing as npt
 
 @dataclass(frozen=True)
 class FilmImage:
-    """Processing-local grayscale image representation.
+    """Processing-local image representation.
 
     Domain contracts intentionally accept ``Any`` so OpenCV/NumPy stay inside
     the processing implementation instead of leaking into application/API code.
     """
 
-    data: npt.NDArray[np.float32]
+    data: npt.NDArray[np.generic]
     bit_depth: int
     source_path: Path
     filename: str

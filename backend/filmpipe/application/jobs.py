@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from inspect import Parameter, signature
 from pathlib import Path
 from threading import RLock
 from uuid import uuid4
@@ -9,7 +10,6 @@ from filmpipe.domain.models import (
     ImageProcessingResult,
     ProcessingError,
     ProcessingJob,
-    ProcessingMode,
     ProcessingOptions,
     ProcessingStatus,
 )
@@ -43,7 +43,7 @@ class JobService:
         self,
         *,
         storage: FileSystemArtifactStore | None = None,
-        pipeline_factory: Callable[[], ProcessingPipeline] = default_pipeline,
+        pipeline_factory: Callable[..., ProcessingPipeline] = default_pipeline,
     ) -> None:
         self.storage = storage or FileSystemArtifactStore()
         self.pipeline_factory = pipeline_factory
@@ -53,7 +53,6 @@ class JobService:
         inputs: Iterable[Path | str],
         *,
         options: ProcessingOptions | None = None,
-        selected_modes: list[ProcessingMode] | None = None,
         job_id: str | None = None,
     ) -> ProcessingJob:
         options = options or ProcessingOptions()
@@ -62,12 +61,16 @@ class JobService:
             id=job_id or uuid4().hex,
             inputs=input_paths,
             options=options,
-            selected_modes=selected_modes or [options.mode],
             status=ProcessingStatus.RUNNING,
         )
 
         logger = get_logger(job_id=job.id)
-        logger.info("job_started")
+        logger.info(
+            "job_started input_processing=%s restoration=%s inputs=%s",
+            options.input_processing.value,
+            options.restoration.value,
+            len(input_paths),
+        )
 
         for input_path in input_paths:
             image_id = uuid4().hex
@@ -76,7 +79,7 @@ class JobService:
                     input_path,
                     options=options,
                     storage=self.storage,
-                    pipeline=self.pipeline_factory(),
+                    pipeline=self._pipeline_for(options),
                     job_id=job.id,
                     image_id=image_id,
                 )
@@ -101,3 +104,28 @@ class JobService:
         job.recompute_status()
         logger.info("job_completed", extra={"status": job.status.value})
         return job
+
+    def _pipeline_for(self, options: ProcessingOptions) -> ProcessingPipeline:
+        try:
+            parameters = signature(self.pipeline_factory).parameters.values()
+        except (TypeError, ValueError):
+            return self.pipeline_factory(options)
+
+        accepts_positional = any(
+            parameter.kind
+            in {
+                Parameter.POSITIONAL_ONLY,
+                Parameter.POSITIONAL_OR_KEYWORD,
+                Parameter.VAR_POSITIONAL,
+            }
+            for parameter in parameters
+        )
+        if accepts_positional:
+            return self.pipeline_factory(options)
+        accepts_options_keyword = any(
+            parameter.kind == Parameter.VAR_KEYWORD or parameter.name == "options"
+            for parameter in parameters
+        )
+        if accepts_options_keyword:
+            return self.pipeline_factory(options=options)
+        return self.pipeline_factory()

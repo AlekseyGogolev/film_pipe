@@ -4,11 +4,12 @@ from filmpipe.domain.models import (
     Artifact,
     ArtifactType,
     ImageProcessingResult,
+    InputProcessingMode,
     ProcessingError,
     ProcessingJob,
-    ProcessingMode,
     ProcessingOptions,
     ProcessingStatus,
+    RestorationMode,
 )
 from filmpipe.domain.processor import (
     ArtifactStore,
@@ -22,12 +23,13 @@ __all__ = [
     "ArtifactStore",
     "ArtifactType",
     "ImageProcessingResult",
+    "InputProcessingMode",
     "ProcessingContext",
     "ProcessingError",
     "ProcessingJob",
-    "ProcessingMode",
     "ProcessingOptions",
     "ProcessingStatus",
     "Processor",
     "ProcessorResult",
+    "RestorationMode",
 ]

@@ -6,16 +6,20 @@ from uuid import uuid4
 from filmpipe.domain.models import (
     ArtifactType,
     ImageProcessingResult,
+    InputProcessingMode,
     ProcessingError,
     ProcessingOptions,
     ProcessingStatus,
+    RestorationMode,
 )
-from filmpipe.domain.processor import ProcessingContext
+from filmpipe.domain.processor import ProcessingContext, Processor
 from filmpipe.infrastructure.logging import get_logger
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.pipeline import ProcessingPipeline
 from filmpipe.processing.processors import (
-    DecodeImageProcessor,
+    AIRestorationProcessor,
+    DecodeBWImageProcessor,
+    DecodePositiveImageProcessor,
     NegativeConverterProcessor,
     PositiveArtifactWriterProcessor,
     ToneNormalizerProcessor,
@@ -36,7 +40,7 @@ def process_image(
     image_id = image_id or uuid4().hex
     options = options or ProcessingOptions()
     storage = storage or FileSystemArtifactStore()
-    pipeline = pipeline or default_pipeline()
+    pipeline = pipeline or default_pipeline(options)
 
     logger = get_logger(job_id=job_id, image_id=image_id)
     result = ImageProcessingResult(
@@ -72,17 +76,38 @@ def process_image(
         artifacts={ArtifactType.ORIGINAL: original},
     )
 
+    logger.info(
+        "pipeline_ready input_processing=%s restoration=%s processors=%s",
+        options.input_processing.value,
+        options.restoration.value,
+        ",".join(processor.name for processor in pipeline.processors),
+    )
     result = pipeline.run(original.path, context, result)
     logger.info("image_processing_completed", extra={"status": result.status.value})
     return result
 
 
-def default_pipeline() -> ProcessingPipeline:
-    return ProcessingPipeline(
-        processors=[
-            DecodeImageProcessor(),
+def default_pipeline(options: ProcessingOptions | None = None) -> ProcessingPipeline:
+    return ProcessingPipeline(default_processors(options))
+
+
+def default_processors(options: ProcessingOptions | None = None) -> list[Processor]:
+    options = options or ProcessingOptions()
+
+    if options.input_processing == InputProcessingMode.ALREADY_POSITIVE:
+        processors: list[Processor] = [DecodePositiveImageProcessor()]
+    elif options.input_processing == InputProcessingMode.BW_NEGATIVE:
+        processors = [
+            DecodeBWImageProcessor(),
             NegativeConverterProcessor(),
             ToneNormalizerProcessor(),
             PositiveArtifactWriterProcessor(),
         ]
-    )
+    else:
+        raise ValueError(
+            f"Input processing mode {options.input_processing.value} is not implemented."
+        )
+
+    if options.restoration != RestorationMode.OFF:
+        processors.append(AIRestorationProcessor())
+    return processors

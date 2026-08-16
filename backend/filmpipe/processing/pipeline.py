@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
-from filmpipe.domain.models import ArtifactType, ImageProcessingResult, ProcessingError, ProcessingStatus
+from filmpipe.domain.models import ImageProcessingResult, ProcessingError, ProcessingStatus
 from filmpipe.domain.processor import ProcessingContext, Processor
 from filmpipe.infrastructure.logging import get_logger
 
@@ -75,18 +75,24 @@ class ProcessingPipeline:
                 stopped_by_failure = not processor.optional
                 break
 
-        image_result.status = self._resolve_status(image_result, stopped_by_failure)
+        image_result.status = self._resolve_status(
+            image_result,
+            stopped_by_failure,
+            context,
+        )
         return image_result
 
     @staticmethod
     def _resolve_status(
         result: ImageProcessingResult,
         stopped_by_failure: bool,
+        context: ProcessingContext,
     ) -> ProcessingStatus:
+        has_recoverable_result = result.has_positive or context.working_positive is not None
         if stopped_by_failure:
-            return ProcessingStatus.PARTIAL_SUCCESS if result.has_positive else ProcessingStatus.FAILED
+            return ProcessingStatus.PARTIAL_SUCCESS if has_recoverable_result else ProcessingStatus.FAILED
 
         if result.errors:
-            return ProcessingStatus.PARTIAL_SUCCESS if result.has_positive else ProcessingStatus.FAILED
+            return ProcessingStatus.PARTIAL_SUCCESS if has_recoverable_result else ProcessingStatus.FAILED
 
         return ProcessingStatus.SUCCESS

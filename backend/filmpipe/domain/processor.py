@@ -32,6 +32,7 @@ class ProcessingContext:
     logger: logging.Logger | logging.LoggerAdapter[Any]
     artifacts: dict[ArtifactType, Artifact] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+    working_positive: Any | None = None
 
 
 @dataclass

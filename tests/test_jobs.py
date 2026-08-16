@@ -15,7 +15,6 @@ def _job(*statuses: ProcessingStatus) -> ProcessingJob:
         id="job-1",
         inputs=[Path(f"image-{index}.txt") for index, _ in enumerate(statuses)],
         options=ProcessingOptions(),
-        selected_modes=[],
         results=[
             ImageProcessingResult(
                 image_id=f"image-{index}",

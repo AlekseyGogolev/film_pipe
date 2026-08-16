@@ -4,17 +4,21 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-class ProcessingMode(str, Enum):
-    BW = "bw"
-    COLORIZE = "colorize"
-    CREATIVE = "creative"
+class InputProcessingMode(str, Enum):
+    ALREADY_POSITIVE = "already_positive"
+    BW_NEGATIVE = "bw_negative"
+
+
+class RestorationMode(str, Enum):
+    OFF = "off"
+    TELEA = "telea"
+    LAMA = "lama"
 
 
 class ArtifactType(str, Enum):
@@ -35,9 +39,8 @@ class ProcessingStatus(str, Enum):
 
 @dataclass
 class ProcessingOptions:
-    mode: ProcessingMode = ProcessingMode.BW
-    prompt: str | None = None
-    extra: dict[str, Any] = field(default_factory=dict)
+    input_processing: InputProcessingMode = InputProcessingMode.BW_NEGATIVE
+    restoration: RestorationMode = RestorationMode.OFF
 
 
 @dataclass(frozen=True)
@@ -107,7 +110,6 @@ class ProcessingJob:
     id: str
     inputs: list[Path]
     options: ProcessingOptions
-    selected_modes: list[ProcessingMode]
     status: ProcessingStatus = ProcessingStatus.PENDING
     results: list[ImageProcessingResult] = field(default_factory=list)
     errors: list[ProcessingError] = field(default_factory=list)
