@@ -1,4 +1,8 @@
-export type ProcessingMode = "bw" | "colorize" | "creative";
+export type ProcessingMode = "off" | "bw" | "colorize" | "creative";
+
+export type InputPolarity = "negative" | "positive";
+
+export type RestorationMode = "off" | "telea" | "lama";
 
 export type ProcessingStatus =
   | "pending"
@@ -41,6 +45,8 @@ export interface Job {
   id: string;
   status: ProcessingStatus;
   mode: ProcessingMode;
+  polarity: InputPolarity;
+  restoration: RestorationMode;
   selected_modes: ProcessingMode[];
   created_at: string;
   updated_at: string;

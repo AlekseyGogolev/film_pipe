@@ -4,7 +4,12 @@ import subprocess
 import sys
 import textwrap
 
-from filmpipe.domain.models import ArtifactType, ProcessingOptions, ProcessingStatus
+from filmpipe.domain.models import (
+    ArtifactType,
+    ProcessingOptions,
+    ProcessingStatus,
+    RestorationMode,
+)
 from filmpipe.infrastructure.logging import setup_logging
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.engine import process_image
@@ -18,7 +23,7 @@ def test_process_image_smoke_without_http_dependency(tmp_path):
 
     result = process_image(
         source,
-        options=ProcessingOptions(),
+        options=ProcessingOptions(restoration=RestorationMode.OFF),
         storage=FileSystemArtifactStore(tmp_path / "jobs"),
         job_id="job-1",
         image_id="image-1",
@@ -33,7 +38,7 @@ def test_process_image_smoke_without_http_dependency(tmp_path):
         import sys
         from pathlib import Path
 
-        from filmpipe.domain.models import ProcessingOptions
+        from filmpipe.domain.models import ProcessingOptions, RestorationMode
         from filmpipe.infrastructure.logging import setup_logging
         from filmpipe.infrastructure.storage import FileSystemArtifactStore
         from filmpipe.processing.engine import process_image
@@ -41,7 +46,7 @@ def test_process_image_smoke_without_http_dependency(tmp_path):
         setup_logging(Path(sys.argv[3]))
         result = process_image(
             Path(sys.argv[1]),
-            options=ProcessingOptions(),
+            options=ProcessingOptions(restoration=RestorationMode.OFF),
             storage=FileSystemArtifactStore(Path(sys.argv[2])),
             job_id="job-subprocess",
             image_id="image-subprocess",

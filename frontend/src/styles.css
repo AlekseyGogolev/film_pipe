@@ -113,7 +113,9 @@ a {
 
 .controlBand {
   display: grid;
-  grid-template-columns: minmax(220px, 1.1fr) auto minmax(220px, 0.9fr) auto;
+  grid-template-columns:
+    minmax(220px, 1fr) auto minmax(230px, auto) minmax(260px, auto)
+    minmax(220px, 0.85fr) auto;
   gap: 12px;
   align-items: end;
   padding: 14px;
@@ -252,13 +254,15 @@ button:disabled,
   color: var(--teal-dark);
 }
 
-.promptField {
+.promptField,
+.optionField {
   display: grid;
   gap: 5px;
   min-width: 0;
 }
 
-.promptField span {
+.promptField span,
+.optionField > span {
   color: var(--muted);
   font-size: 12px;
   font-weight: 700;
@@ -277,6 +281,14 @@ button:disabled,
 .promptField input:disabled {
   color: #8b958b;
   background: #f2f4ef;
+}
+
+.restorationGroup {
+  width: 100%;
+}
+
+.restorationButton {
+  min-width: 86px;
 }
 
 .errorBanner {
@@ -485,7 +497,7 @@ button:disabled,
 
 .comparisonGrid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 14px;
 }
 

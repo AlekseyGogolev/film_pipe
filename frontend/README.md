@@ -43,12 +43,16 @@ npm run build
 
 The UI talks only to the FilmPipe HTTP API:
 
-- `POST /jobs` with multipart `mode=bw` and one or more `files`.
+- `POST /jobs` with multipart `mode=bw`, `polarity=negative|positive`, and one or more `files`.
+- `polarity=positive` skips negative conversion and tone normalization for already-positive inputs.
+- `restoration=off|telea|lama`; the UI defaults to `off` unless the user explicitly chooses restoration.
 - `GET /jobs/{job_id}` for polling if a job is pending/running.
 - `preview_url` and `download_url` from artifact responses.
 - `download_url` from the job response for batch ZIP export.
 
 `Colorize` and `Creative` are visible as disabled future modes. The creative prompt field exists but is disabled while the backend supports only `bw`.
+
+When `restored` exists, the UI previews and downloads it the same way as `original` and `positive`. If AI restoration fails, the UI keeps showing `positive` with the existing recoverable error state.
 
 ## Known UI Limitation
 

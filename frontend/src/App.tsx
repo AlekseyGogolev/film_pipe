@@ -16,10 +16,12 @@ import { apiUrl, createJob, getJob } from "./api";
 import type {
   Artifact,
   ArtifactType,
+  InputPolarity,
   ImageResult,
   Job,
   ProcessingMode,
   ProcessingStatus,
+  RestorationMode,
 } from "./types";
 
 const MODES: Array<{
@@ -31,6 +33,52 @@ const MODES: Array<{
   { id: "bw", label: "B&W", shortLabel: "BW", enabled: true },
   { id: "colorize", label: "Colorize", shortLabel: "CO", enabled: false },
   { id: "creative", label: "Creative", shortLabel: "CR", enabled: false },
+];
+
+const INPUT_POLARITIES: Array<{
+  id: InputPolarity;
+  label: string;
+  shortLabel: string;
+  title: string;
+}> = [
+  {
+    id: "negative",
+    label: "Negative",
+    shortLabel: "NEG",
+    title: "Film negative input; convert to positive",
+  },
+  {
+    id: "positive",
+    label: "Positive",
+    shortLabel: "POS",
+    title: "Already-positive input; do not invert",
+  },
+];
+
+const RESTORATION_MODES: Array<{
+  id: RestorationMode;
+  label: string;
+  shortLabel: string;
+  title: string;
+}> = [
+  {
+    id: "off",
+    label: "Off",
+    shortLabel: "OFF",
+    title: "Без удаления дефектов",
+  },
+  {
+    id: "telea",
+    label: "TELEA",
+    shortLabel: "TE",
+    title: "Быстрый OpenCV restoration",
+  },
+  {
+    id: "lama",
+    label: "LaMa",
+    shortLabel: "AI",
+    title: "AI restoration",
+  },
 ];
 
 const STATUS_LABELS: Record<ProcessingStatus, string> = {
@@ -53,6 +101,8 @@ export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [files, setFiles] = useState<File[]>([]);
   const [mode, setMode] = useState<ProcessingMode>("bw");
+  const [polarity, setPolarity] = useState<InputPolarity>("negative");
+  const [restoration, setRestoration] = useState<RestorationMode>("off");
   const [prompt, setPrompt] = useState("");
   const [job, setJob] = useState<Job | null>(null);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
@@ -126,7 +176,7 @@ export default function App() {
     setError(null);
     setJob(null);
     try {
-      const nextJob = await createJob(files, mode, prompt);
+      const nextJob = await createJob(files, mode, polarity, restoration, prompt);
       setJob(nextJob);
       setSelectedImageId(nextJob.images[0]?.id ?? null);
     } catch (submitError) {
@@ -206,6 +256,58 @@ export default function App() {
             </button>
           ))}
         </div>
+
+        <label className="optionField">
+          <span>Input</span>
+          <div
+            className="modeGroup polarityGroup"
+            role="radiogroup"
+            aria-label="Input polarity"
+          >
+            {INPUT_POLARITIES.map((item) => (
+              <button
+                key={item.id}
+                className={`modeButton polarityButton ${
+                  polarity === item.id ? "active" : ""
+                }`}
+                type="button"
+                disabled={mode !== "bw" || submitting}
+                onClick={() => setPolarity(item.id)}
+                title={item.title}
+                aria-pressed={polarity === item.id}
+              >
+                <span>{item.shortLabel}</span>
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </label>
+
+        <label className="optionField">
+          <span>Restoration</span>
+          <div
+            className="modeGroup restorationGroup"
+            role="radiogroup"
+            aria-label="Restoration"
+          >
+            {RESTORATION_MODES.map((item) => (
+              <button
+                key={item.id}
+                className={`modeButton restorationButton ${
+                  restoration === item.id ? "active" : ""
+                }`}
+                type="button"
+                disabled={mode !== "bw" || submitting}
+                onClick={() => setRestoration(item.id)}
+                title={item.title}
+                aria-pressed={restoration === item.id}
+              >
+                <span>{item.shortLabel}</span>
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </label>
 
         <label className="promptField">
           <span>Creative prompt</span>
@@ -332,6 +434,7 @@ function FileList({ files }: { files: File[] }) {
 function ImageDetails({ image }: { image: ImageResult }) {
   const original = artifactOf(image, "original");
   const positive = artifactOf(image, "positive");
+  const restored = artifactOf(image, "restored");
 
   return (
     <>
@@ -348,6 +451,7 @@ function ImageDetails({ image }: { image: ImageResult }) {
       <div className="comparisonGrid">
         <PreviewCard label="Original" artifact={original} />
         <PreviewCard label="Positive" artifact={positive} />
+        {restored ? <PreviewCard label="Restored" artifact={restored} /> : null}
       </div>
 
       <div className="artifactStrip">
