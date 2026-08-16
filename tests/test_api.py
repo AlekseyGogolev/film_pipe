@@ -228,14 +228,22 @@ def test_create_job_single_success_and_artifact_download(tmp_path):
 
     preview = client.get(artifacts["positive"]["preview_url"])
     assert preview.status_code == 200
-    output = _decode_response_image(preview.content)
-    assert output.dtype == np.uint16
-    assert output[:, 0].mean() < output[:, -1].mean()
+    assert preview.headers["content-type"] == "image/png"
+    preview_output = _decode_response_image(preview.content)
+    assert preview_output.dtype == np.uint8
+    assert preview_output[:, 0].mean() < preview_output[:, -1].mean()
 
     download = client.get(artifacts["positive"]["download_url"])
     assert download.status_code == 200
     assert download.headers["content-type"] == "image/tiff"
     assert "attachment" in download.headers["content-disposition"]
+    master_output = _decode_response_image(download.content)
+    assert master_output.dtype == np.uint16
+    assert master_output[:, 0].mean() < master_output[:, -1].mean()
+
+    original_preview = client.get(artifacts["original"]["preview_url"])
+    assert original_preview.status_code == 200
+    assert original_preview.headers["content-type"] == "image/png"
 
 
 def test_batch_job_is_partial_when_one_image_fails(tmp_path):
@@ -258,6 +266,12 @@ def test_batch_job_is_partial_when_one_image_fails(tmp_path):
     assert failed["filename"] == "broken.png"
     assert failed["errors"][0]["stage"] == "decode"
     assert not any(artifact["type"] == "positive" for artifact in failed["artifacts"])
+    failed_original = next(
+        artifact for artifact in failed["artifacts"] if artifact["type"] == "original"
+    )
+    failed_preview = client.get(failed_original["preview_url"])
+    assert failed_preview.status_code == 422
+    assert "Предпросмотр" in failed_preview.json()["detail"]
 
     archive_response = client.get(job["download_url"])
     assert archive_response.status_code == 200

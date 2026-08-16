@@ -121,6 +121,10 @@ GET /jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/preview
 GET /jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/download
 ```
 
+`/preview` returns a browser-friendly PNG representation generated from the
+stored artifact. `/download` returns the stored artifact bytes and MIME type, so
+MVP positive downloads remain 16-bit TIFF masters.
+
 Batch ZIP export:
 
 ```text
@@ -179,6 +183,20 @@ Internal representation is processing-local: a 2D NumPy `float32` grayscale imag
 
 Output `positive` artifacts are 16-bit TIFF files.
 
+## Output Artifacts
+
+The filesystem storage layout is:
+
+```text
+data/jobs/{job_id}/{image_id}/original/{source_filename}
+data/jobs/{job_id}/{image_id}/positive/{safe_stem}_positive.tiff
+```
+
+`original` artifacts are immutable copies of uploaded files. `positive`
+artifacts are generated separately and do not replace originals. Batch ZIP
+downloads include generated result artifacts such as `positive` and exclude
+immutable originals.
+
 Current B&W algorithm:
 
 ```text
@@ -204,6 +222,21 @@ logs/filmpipe.log
 ```
 
 Log records include `job_id`, `image_id`, and `processor` context. User-facing errors intentionally do not include stack traces.
+
+## Known MVP Limitations
+
+- The API job registry is in memory; jobs disappear on server restart.
+- `POST /jobs` runs synchronously. Agent 5 measured about 0.01s for one small
+  real negative, 0.26s for a three-image real batch, and 2.86s for a 36-image
+  repeated real batch on this local environment, so no background queue was
+  added for the MVP.
+- FilmPipe assumes the uploaded B&W image is an actual negative. It does not
+  auto-detect already-positive archive scans.
+- Preview PNGs are display representations. Downloads remain the stored
+  artifact format and bit depth.
+- No film border detection, frame cropping, rotation, dust/scratch detection,
+  restoration, colorization, or creative processing is implemented.
+- Metadata and ICC profiles are not preserved in generated positive artifacts.
 
 ## MVP Extension Points
 

@@ -8,7 +8,7 @@ Agent 4 frontend work is implemented. The MVP now supports:
 multipart upload
 → B&W processing job
 → per-image status/errors/artifacts
-→ artifact preview/download
+→ browser-friendly artifact preview/download
 → Original / Positive comparison UI
 → individual artifact download
 → batch ZIP download
@@ -22,6 +22,8 @@ positive
 ```
 
 `positive` is a 16-bit TIFF generated from a decoded B&W negative scan. The frontend is a minimal React/Vite app in `frontend/` and talks only to the HTTP API contract.
+
+Agent 5 verified the MVP end-to-end on real/open negative material and fixed the browser preview blocker. `/preview` now returns transient 8-bit PNG bytes for browser display; `/download` still returns the stored master artifact such as the 16-bit TIFF positive.
 
 ## Architecture
 
@@ -67,6 +69,7 @@ Important boundaries:
 - Processing: NumPy + OpenCV in concrete processors only.
 - API: FastAPI factory at `filmpipe.api.app:create_app`.
 - Uploads: multipart form parsing via `python-multipart`.
+- Preview: backend-generated PNG representation from stored artifacts.
 - Job persistence: in-memory `InMemoryJobRegistry`; jobs reset on server restart.
 - Job execution: `POST /jobs` processes synchronously for MVP and returns the final job state.
 - Frontend: React 18 + TypeScript + Vite 8 under `frontend/`.
@@ -81,6 +84,7 @@ WHY:
 - No DB is needed for local MVP job state.
 - Synchronous job creation keeps Agent 3 simple; frontend can still poll `GET /jobs/{job_id}` and will receive final state for now.
 - ZIP export reads existing generated artifacts from filesystem storage and excludes immutable originals.
+- PNG previews keep browser display independent of TIFF support while preserving the master TIFF download contract.
 - Vite proxy avoids adding CORS to the FastAPI MVP and keeps backend API unchanged.
 
 Image decisions from Agent 2 remain:
@@ -103,6 +107,7 @@ Image decisions from Agent 2 remain:
 - Filesystem storage: `backend/filmpipe/infrastructure/storage.py`
 - Job orchestration and in-memory registry: `backend/filmpipe/application/jobs.py`
 - HTTP API and response serialization helpers: `backend/filmpipe/api/app.py`
+- Browser preview rendering helper: `backend/filmpipe/processing/preview.py`
 - Frontend entrypoint: `frontend/src/main.tsx`
 - Frontend app/state/UI: `frontend/src/App.tsx`
 - Frontend typed API client: `frontend/src/api.ts`
@@ -178,6 +183,8 @@ mime_type
 preview_url
 download_url
 ```
+
+`mime_type` describes the stored artifact/download. `preview_url` returns a PNG display representation and is intentionally not the master artifact bytes.
 
 Batch ZIP export includes existing generated artifacts such as `positive`. It intentionally excludes `original` files.
 
@@ -273,7 +280,7 @@ colorized
 creative
 ```
 
-Preview/download endpoints return the artifact bytes with the artifact MIME type. Batch ZIP returns `application/zip` and contains only existing generated result artifacts.
+Preview endpoints return browser-friendly `image/png` bytes generated from the stored artifact. Download endpoints return the artifact bytes with the stored artifact MIME type. Batch ZIP returns `application/zip` and contains only existing generated result artifacts.
 
 ## Frontend Contract
 
@@ -299,7 +306,8 @@ Current UI behavior:
 - Polling exists for `pending`/`running` jobs, although current backend returns final state synchronously.
 - Job status, per-image status, per-image stage errors, artifact links, and batch ZIP are rendered from API response fields.
 - Original/Positive panels attempt to render `preview_url` in `<img>`.
-- If the browser cannot display the artifact MIME type, the UI shows a fallback and keeps download actions available.
+- `preview_url` now serves PNG for valid image artifacts, including 16-bit TIFF positives.
+- If preview generation or browser image loading fails, the UI shows a fallback and keeps download actions available.
 
 Do not expose or depend on filesystem paths, OpenCV/NumPy details, processor class names beyond user-facing `stage`, or storage layout.
 
@@ -371,23 +379,42 @@ npm run build
 
 Current tests cover storage immutability/overwrite behavior, pipeline success/failure/partial success, job status aggregation, logging context, direct engine invocation without HTTP, decode/validation errors, negative conversion, tone normalization, positive artifact writing, HTTP job creation, batch partial success, optional failure exposure, artifact preview/download, and ZIP export.
 
-Last verified by Agent 4:
+Last verified by Agent 5:
 
 ```text
 .venv/bin/pytest
 22 passed
 
-cd frontend && npm run build
+npm run build (from frontend/)
 passed
 ```
 
-Manual smoke verified by Agent 4:
+Manual smoke verified by Agent 5:
 
 ```text
-FastAPI http://127.0.0.1:8000/health -> {"status":"ok"}
-Vite proxy http://127.0.0.1:5173/api/health -> {"status":"ok"}
-POST http://127.0.0.1:5173/api/jobs with a synthetic 16-bit TIFF -> job.status success
-Playwright UI smoke: select TIFF, Process, job/image status Готово, download links rendered
+Real/open actual negative samples used from Wikimedia Commons:
+- Abraham_Lincoln_O-77_negative_by_Gardner,_1863.png — https://commons.wikimedia.org/wiki/File:Abraham_Lincoln_O-77_negative_by_Gardner,_1863.png
+- Glass_plate_negative.jpg — https://commons.wikimedia.org/wiki/File:Glass_plate_negative.jpg
+- 35mm_movie_negative.jpg — https://commons.wikimedia.org/wiki/File:35mm_movie_negative.jpg
+
+Direct real-negative processing:
+- 3 selected actual-negative/film-border samples -> success.
+- Positive output visually usable for Abraham Lincoln O-77 and Glass plate negative.
+- 35mm movie negative has film/perforation borders; frame content remained inspectable after conversion.
+- Other archive files labeled as "negative" were found to contain already-positive pixels; pipeline intentionally does not auto-detect polarity.
+
+Headless Chrome UI smoke:
+- valid, valid, corrupted, valid upload through real <input type=file>.
+- Per-image statuses: success, success, failed, success.
+- Job status: partial_success / "Частично".
+- Valid Original and Positive previews rendered in browser with non-zero naturalWidth/naturalHeight.
+- Failed corrupted image showed only "Не удалось декодировать изображение ..." with no stack trace/internal details.
+- Batch ZIP endpoint returned application/zip with 3 positive TIFF artifacts and excluded the failed image/originals.
+
+Sync POST timings in this local environment:
+- single small real negative: ~0.009s.
+- 3-image real batch: ~0.257s.
+- 36-image repeated real batch: ~2.865s.
 ```
 
 ## Known Limitations
@@ -395,7 +422,8 @@ Playwright UI smoke: select TIFF, Process, job/image status Готово, downlo
 - API job registry is in-memory; jobs disappear on server restart.
 - `POST /jobs` is synchronous for MVP; long batches block that request until complete.
 - Only technical B&W negative-to-positive processing is implemented.
-- Browser TIFF preview is limited. The API returns TIFF bytes for TIFF artifacts; the frontend shows fallback preview panels when the browser cannot render `image/tiff`.
+- Preview PNGs are display representations generated on request; downloads remain the stored artifact format/bit depth.
+- FilmPipe assumes input pixels are an actual negative. It does not detect already-positive archive scans.
 - No film border detection, frame cropping, rotation, dust/scratch detection, restoration, colorization, or creative processing.
 - No RAW camera formats, floating-point TIFF, palette images, or CMYK handling.
 - JPEG input is accepted but is already lossy; TIFF/PNG are preferred.
@@ -405,11 +433,11 @@ Playwright UI smoke: select TIFF, Process, job/image status Готово, downlo
 
 ## Open Issues
 
-- Real negative quality needs broader fixture coverage beyond synthetic test images.
-- Some real scans may need frame-border masking before percentile normalization.
+- Real negative quality now has limited real/open smoke coverage, but broader fixture coverage is still needed.
+- Some real scans may need frame-border masking before percentile normalization. Agent 5 did not add border detection because selected actual-negative/film-border samples did not prove a blocking failure.
 - Current pipeline treats RGB/RGBA inputs as B&W luminance; color negative workflow is not implemented.
 - The installed FastAPI/Starlette TestClient/httpx transports hang in this environment; API tests currently use a tiny local ASGI harness instead.
-- No automated frontend component/e2e test suite yet; Agent 4 verified with production build and Playwright smoke only.
+- No committed automated frontend component/e2e test suite yet; Agent 5 used a one-off headless Chrome smoke for integration verification.
 
 ## Decisions That Should Not Be Revisited Without Reason
 
@@ -420,22 +448,37 @@ Playwright UI smoke: select TIFF, Process, job/image status Готово, downlo
 - Use in-memory job registry for Agent 3/4 MVP flow unless persistence becomes necessary.
 - Use one pipeline model for single image and batch.
 - Use 16-bit TIFF for generated positive artifacts.
+- Keep `/preview` browser-friendly and `/download` master-format preserving.
 - Do not include immutable originals in batch result ZIP by default.
-- Do not start AI restoration before the B&W positive pipeline, HTTP API, and frontend MVP are integrated.
+- Keep AI restoration as a future optional stage after `positive`; do not fold it into the mandatory B&W MVP path.
 - Keep frontend on API response URLs and typed API concepts; do not add filesystem coupling.
 - Do not add CORS just for Vite dev while the `/api` proxy satisfies local frontend development.
 
 ## Completed In This Task
 
-- Implemented minimal React/Vite/TypeScript frontend in `frontend/`.
-- Added typed API client and API response types.
-- Added file selection, B&W mode selection, disabled future Colorize/Creative controls, and disabled creative prompt.
-- Added job submission, status rendering, future-compatible polling, per-image selection, per-image errors, Original/Positive comparison panels, individual artifact downloads, and batch ZIP download.
-- Added TIFF preview fallback when browser image rendering fails.
-- Added Vite `/api` proxy to preserve backend contract without adding CORS.
-- Added frontend package/lock/config, favicon, styling, and docs.
+- Added backend PNG preview rendering for artifact preview endpoints.
+- Preserved download/master artifact behavior: positive downloads are still 16-bit TIFF.
+- Updated API tests for PNG preview plus TIFF download preservation.
+- Verified real/open actual-negative processing and visually inspected outputs.
+- Verified mixed batch through the UI: valid, valid, corrupted, valid -> success, success, failed, success; job -> partial_success.
+- Verified user-facing errors in UI do not expose stack traces/internal details.
+- Measured synchronous POST timings and kept sync execution because local MVP timings were acceptable.
 - Updated root README and this handoff.
 
 ## Next Agent
 
-Agent 5 should perform MVP integration and hardening. Start with real B&W negative scans, verify upload → processing → positive → comparison → downloads for single and batch, and check mixed valid/corrupt batch behavior in the UI. Pay special attention to TIFF browser preview limitations, long synchronous jobs, user-facing error clarity, and whether Agent 5 needs a backend-generated browser-friendly preview artifact or endpoint. Do not start AI restoration/colorization/creative processing before the MVP flow is verified end to end.
+MVP integration is verified. The next separate phase can start AI-restoration exploration:
+
+```text
+Positive
+↓
+DefectDetector
+↓
+Mask
+↓
+Restorer
+↓
+Clean Master
+```
+
+Keep the existing B&W pipeline and preview/download contracts stable while adding that optional stage.

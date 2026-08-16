@@ -16,6 +16,7 @@ from filmpipe.domain.models import (
     ProcessingMode,
     ProcessingOptions,
 )
+from filmpipe.processing.preview import PREVIEW_MIME_TYPE, PreviewRenderError, render_preview_png
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -103,7 +104,14 @@ def create_app(
     @app.get("/jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/preview")
     async def preview_artifact(job_id: str, image_id: str, artifact_type: ArtifactType):
         artifact = _get_artifact(registry, job_id, image_id, artifact_type)
-        return Response(content=artifact.path.read_bytes(), media_type=artifact.mime_type)
+        try:
+            preview = render_preview_png(artifact.path)
+        except PreviewRenderError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail="Предпросмотр этого артефакта недоступен.",
+            ) from exc
+        return Response(content=preview, media_type=PREVIEW_MIME_TYPE)
 
     @app.get("/jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/download")
     async def download_artifact(job_id: str, image_id: str, artifact_type: ArtifactType):
