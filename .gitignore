@@ -11,6 +11,11 @@ filmpipe-agent4-*.png
 data/
 logs/
 
+experiments/ai_restoration/.venv/
+experiments/ai_restoration/models/
+experiments/ai_restoration/results/
+experiments/ai_restoration/source/
+
 frontend/node_modules/
 frontend/dist/
 

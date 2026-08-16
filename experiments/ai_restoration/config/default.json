@@ -1,0 +1,25 @@
+{
+  "detector": {
+    "name": "microsoft_bopbtl_scratch",
+    "threshold": 0.4,
+    "dilation": 2,
+    "mask_postprocess": "scene_lines",
+    "input_size": "full_size",
+    "tile_size": 1024,
+    "tile_overlap": 128
+  },
+  "restorers": {
+    "telea": {
+      "enabled": true,
+      "radius": 3.0
+    },
+    "lama": {
+      "enabled": true,
+      "python": null,
+      "refine": false
+    }
+  },
+  "output": {
+    "feather_radius": 0
+  }
+}
