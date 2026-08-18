@@ -16,6 +16,11 @@ experiments/ai_restoration/models/
 experiments/ai_restoration/results/
 experiments/ai_restoration/source/
 
+experiments/creative_edit/models/
+experiments/creative_edit/results/
+experiments/creative_edit/source/
+experiments/creative_edit/runtime/
+
 frontend/node_modules/
 frontend/dist/
 
