@@ -17,6 +17,12 @@ import numpy.typing as npt
 
 from filmpipe.domain.models import ArtifactType, ProcessingError, RestorationMode
 from filmpipe.domain.processor import ProcessingContext, ProcessorResult
+from filmpipe.processing.ai_runtime import (
+    ai_runtime_lifecycle,
+    release_torch_cuda_cache,
+    runtime_label,
+    torch_inference_context,
+)
 from filmpipe.processing.image import FilmImage
 
 OUTPUT_SUFFIX = ".tiff"
@@ -81,6 +87,9 @@ class AIRestorationProcessor:
 
     def process(self, image: Any, context: ProcessingContext) -> ProcessorResult:
         mode = context.options.restoration
+        if mode == RestorationMode.OFF:
+            return ProcessorResult.success(image=image)
+
         positive_image = context.working_positive
         if positive_image is None and isinstance(image, FilmImage):
             positive_image = image.data
@@ -101,7 +110,15 @@ class AIRestorationProcessor:
         positive_image = np.asarray(positive_image)
 
         try:
-            detector_result = self.detector_factory().detect(positive_image)
+            detector = self.detector_factory()
+            with ai_runtime_lifecycle(
+                detector,
+                logger=context.logger,
+                processor=self.name,
+                stage="defect_detection",
+                provider=runtime_label(detector, "microsoft_bopbtl_scratch"),
+            ) as active_detector:
+                detector_result = active_detector.detect(positive_image)
             probability = validate_probability_mask(
                 detector_result.probability,
                 positive_image.shape[:2],
@@ -126,7 +143,17 @@ class AIRestorationProcessor:
                 mode=self.mask_config.mode,
             )
             restorer = self._restorer(mode)
-            candidate = restorer.restore(positive_image, mask_result.restoration_mask)
+            with ai_runtime_lifecycle(
+                restorer,
+                logger=context.logger,
+                processor=self.name,
+                stage="restoration",
+                provider=runtime_label(restorer, mode.value),
+            ) as active_restorer:
+                candidate = active_restorer.restore(
+                    positive_image,
+                    mask_result.restoration_mask,
+                )
             restored = composite_restoration(
                 positive_image,
                 candidate.image,
@@ -191,6 +218,8 @@ class MicrosoftScratchDetector:
     input_size: str = "full_size"
     tile_size: int = 1024
     tile_overlap: int = 128
+    name: str = "microsoft_bopbtl_scratch"
+    model_id: str = "FT_Epoch_latest.pt"
 
     def __post_init__(self) -> None:
         self.models_root = Path(self.models_root)
@@ -313,6 +342,13 @@ class MicrosoftScratchDetector:
         self._model = model
         return model
 
+    def close(self) -> None:
+        torch = self._torch
+        self._model = None
+        self._device = None
+        self._torch = None
+        release_torch_cuda_cache(torch)
+
     def _clear_cuda_cache(self) -> None:
         if self._torch is not None and self._torch.cuda.is_available():
             self._torch.cuda.empty_cache()
@@ -335,9 +371,10 @@ class MicrosoftScratchDetector:
         prepared, restore = _prepare_detector_input(gray, self.input_size)
         tensor = torch.from_numpy(prepared[np.newaxis, np.newaxis, :, :] * 2.0 - 1.0)
         tensor = tensor.to(self._device)
-        with torch.no_grad():
+        with torch_inference_context(torch):
             prediction = torch.sigmoid(model(tensor))
         probability = prediction[0, 0].detach().cpu().numpy().astype(np.float32)
+        del prediction, tensor
         return np.clip(restore(probability), 0.0, 1.0).astype(np.float32)
 
     def _detect_tiled(self, rgb: npt.NDArray[np.uint8]) -> npt.NDArray[np.float32]:
@@ -419,6 +456,8 @@ class LaMaRestorer:
     python_executable: str | None = None
     device_preference: str = "auto"
     refine: bool = False
+    name: str = "lama_big_lama_native"
+    model_id: str = "big-lama"
 
     def __post_init__(self) -> None:
         self.models_root = Path(self.models_root)
@@ -479,7 +518,7 @@ class LaMaRestorer:
         image_tensor = _pad_tensor_to_modulo(torch, image_tensor, 8)
         mask_tensor = _pad_tensor_to_modulo(torch, mask_tensor, 8)
 
-        with torch.no_grad():
+        with torch_inference_context(torch):
             masked_image = image_tensor * (1.0 - mask_tensor)
             model_input = torch.cat([masked_image, mask_tensor], dim=1)
             predicted = model(model_input)
@@ -487,6 +526,15 @@ class LaMaRestorer:
 
         output = inpainted[0, :, :height, :width].permute(1, 2, 0)
         output_np = output.detach().cpu().numpy()
+        del (
+            output,
+            inpainted,
+            predicted,
+            model_input,
+            masked_image,
+            mask_tensor,
+            image_tensor,
+        )
         return np.clip(np.round(output_np * 255.0), 0, 255).astype(np.uint8)
 
     def _load_native_model(self) -> Any:
@@ -551,6 +599,13 @@ class LaMaRestorer:
         self._device = device
         self._model = model
         return model
+
+    def close(self) -> None:
+        torch = self._torch
+        self._model = None
+        self._device = None
+        self._torch = None
+        release_torch_cuda_cache(torch)
 
     def _resolve_device(self, torch: Any) -> Any:
         preference = self.device_preference.lower()

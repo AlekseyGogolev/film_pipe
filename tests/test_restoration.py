@@ -14,7 +14,8 @@ from filmpipe.domain.models import (
     ProcessingStatus,
     RestorationMode,
 )
-from filmpipe.infrastructure.logging import setup_logging
+from filmpipe.domain.processor import ProcessingContext
+from filmpipe.infrastructure.logging import get_logger, setup_logging
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.engine import default_pipeline, process_image
 from filmpipe.processing.pipeline import ProcessingPipeline
@@ -41,14 +42,23 @@ class FakeDetector:
     calls: int = 0
     should_fail: bool = False
     failure_message: str = "detector boom"
+    close_calls: int = 0
+    events: list[str] | None = None
 
     def detect(self, image: np.ndarray) -> DetectionResult:
         self.calls += 1
+        if self.events is not None:
+            self.events.append("detector_detect")
         if self.should_fail:
             raise RuntimeError(self.failure_message)
         probability = np.zeros(image.shape[:2], dtype=np.float32)
         probability[image.shape[0] // 2, image.shape[1] // 2] = 1.0
         return DetectionResult(probability=probability, metadata={"name": "fake"})
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.events is not None:
+            self.events.append("detector_closed")
 
 
 @dataclass
@@ -56,9 +66,28 @@ class FakeRestorer:
     calls: int = 0
     should_fail: bool = False
     fail_first_only: bool = False
+    close_calls: int = 0
+    events: list[str] | None = None
+    required_event_before_restore: str | None = None
 
-    def restore(self, image: np.ndarray, restoration_mask: np.ndarray) -> RestorerCandidate:
+    def restore(
+        self,
+        image: np.ndarray,
+        restoration_mask: np.ndarray,
+    ) -> RestorerCandidate:
         self.calls += 1
+        if (
+            self.required_event_before_restore is not None
+            and (
+                self.events is None
+                or self.required_event_before_restore not in self.events
+            )
+        ):
+            raise RuntimeError(
+                f"missing lifecycle event: {self.required_event_before_restore}"
+            )
+        if self.events is not None:
+            self.events.append("restorer_restore")
         if self.should_fail or (self.fail_first_only and self.calls == 1):
             raise RuntimeError("restorer boom")
         candidate = np.zeros_like(image)
@@ -67,6 +96,11 @@ class FakeRestorer:
         else:
             candidate[restoration_mask > 0, :] = np.iinfo(image.dtype).max
         return RestorerCandidate(image=candidate, metadata={"name": "fake"})
+
+    def close(self) -> None:
+        self.close_calls += 1
+        if self.events is not None:
+            self.events.append("restorer_closed")
 
 
 def _pipeline(
@@ -184,18 +218,21 @@ def test_successful_telea_restoration_preserves_positive_and_creates_restored(tm
 
 def test_successful_lama_restoration_uses_fake_adapter_without_gpu_inference(tmp_path):
     setup_logging(tmp_path / "logs")
+    detector = FakeDetector()
     restorer = FakeRestorer()
     result = process_image(
         _negative(tmp_path),
         options=ProcessingOptions(restoration=RestorationMode.LAMA),
         storage=FileSystemArtifactStore(tmp_path / "jobs"),
-        pipeline=_pipeline(restorer=restorer),
+        pipeline=_pipeline(detector=detector, restorer=restorer),
         job_id="job-1",
         image_id="image-1",
     )
 
     assert result.status == ProcessingStatus.SUCCESS
+    assert detector.close_calls == 1
     assert restorer.calls == 1
+    assert restorer.close_calls == 1
     assert result.artifact(ArtifactType.POSITIVE) is not None
     assert result.artifact(ArtifactType.RESTORED) is not None
 
@@ -232,16 +269,18 @@ def test_positive_input_can_go_directly_to_restoration(tmp_path):
 
 def test_detector_failure_after_positive_is_partial_success(tmp_path):
     setup_logging(tmp_path / "logs")
+    detector = FakeDetector(should_fail=True)
     result = process_image(
         _negative(tmp_path),
         options=ProcessingOptions(restoration=RestorationMode.LAMA),
         storage=FileSystemArtifactStore(tmp_path / "jobs"),
-        pipeline=_pipeline(detector=FakeDetector(should_fail=True)),
+        pipeline=_pipeline(detector=detector),
         job_id="job-1",
         image_id="image-1",
     )
 
     assert result.status == ProcessingStatus.PARTIAL_SUCCESS
+    assert detector.close_calls == 1
     assert result.artifact(ArtifactType.POSITIVE) is not None
     assert result.artifact(ArtifactType.RESTORED) is None
     assert result.errors[0].stage == "defect_detection"
@@ -271,20 +310,70 @@ def test_missing_pytorch_detector_failure_has_actionable_user_message(tmp_path):
 
 def test_restorer_failure_after_positive_is_partial_success(tmp_path):
     setup_logging(tmp_path / "logs")
+    detector = FakeDetector()
+    restorer = FakeRestorer(should_fail=True)
     result = process_image(
         _negative(tmp_path),
         options=ProcessingOptions(restoration=RestorationMode.LAMA),
         storage=FileSystemArtifactStore(tmp_path / "jobs"),
-        pipeline=_pipeline(restorer=FakeRestorer(should_fail=True)),
+        pipeline=_pipeline(detector=detector, restorer=restorer),
         job_id="job-1",
         image_id="image-1",
     )
 
     assert result.status == ProcessingStatus.PARTIAL_SUCCESS
+    assert detector.close_calls == 1
+    assert restorer.close_calls == 1
     assert result.artifact(ArtifactType.POSITIVE) is not None
     assert result.artifact(ArtifactType.RESTORED) is None
     assert result.errors[0].stage == "restoration"
     assert result.errors[0].recoverable is True
+
+
+def test_restoration_off_does_not_create_detector_or_restorer_runtime(tmp_path):
+    setup_logging(tmp_path / "logs")
+    context = ProcessingContext(
+        job_id="job-1",
+        image_id="image-1",
+        filename="scan.tiff",
+        options=ProcessingOptions(restoration=RestorationMode.OFF),
+        artifact_store=FileSystemArtifactStore(tmp_path / "jobs"),
+        logger=get_logger(job_id="job-1", image_id="image-1"),
+        working_positive=np.zeros((4, 4), dtype=np.uint16),
+    )
+    processor = AIRestorationProcessor(
+        detector_factory=lambda: (_ for _ in ()).throw(RuntimeError("detector created")),
+        restorer_factories={
+            RestorationMode.LAMA: lambda: (_ for _ in ()).throw(
+                RuntimeError("restorer created")
+            )
+        },
+    )
+
+    result = processor.process(context.working_positive, context)
+
+    assert not result.errors
+
+
+def test_detector_cleanup_happens_before_restorer_starts(tmp_path):
+    setup_logging(tmp_path / "logs")
+    events: list[str] = []
+    detector = FakeDetector(events=events)
+    restorer = FakeRestorer(
+        events=events,
+        required_event_before_restore="detector_closed",
+    )
+    result = process_image(
+        _negative(tmp_path),
+        options=ProcessingOptions(restoration=RestorationMode.LAMA),
+        storage=FileSystemArtifactStore(tmp_path / "jobs"),
+        pipeline=_pipeline(detector=detector, restorer=restorer),
+        job_id="job-1",
+        image_id="image-1",
+    )
+
+    assert result.status == ProcessingStatus.SUCCESS
+    assert events.index("detector_closed") < events.index("restorer_restore")
 
 
 def test_final_composite_keeps_pixels_outside_restoration_mask_identical(tmp_path):

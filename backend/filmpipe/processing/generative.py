@@ -16,6 +16,7 @@ import numpy.typing as npt
 
 from filmpipe.domain.models import Artifact, ArtifactType, FinalProcessingMode, ProcessingError
 from filmpipe.domain.processor import ProcessingContext, ProcessorResult
+from filmpipe.processing.ai_runtime import ai_runtime_lifecycle, runtime_label
 from filmpipe.processing.image import FilmImage
 
 CreativeSourceKind = Literal["restored", "positive", "working_positive", "original"]
@@ -116,6 +117,7 @@ class StableDiffusionCppProvider:
     config: StableDiffusionCppConfig = field(default_factory=StableDiffusionCppConfig.from_env)
     name: str = "stable_diffusion_cpp_cli"
     model_id: str = "flux_kontext_q4"
+    _process: subprocess.Popen[str] | None = field(default=None, init=False, repr=False)
 
     def generate(self, request: CreativeRequest) -> CreativeResult:
         missing = [path for path in self.config.required_paths if not path.exists()]
@@ -129,25 +131,29 @@ class StableDiffusionCppProvider:
 
         command = self._command(request)
         started = perf_counter()
+        process = subprocess.Popen(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self._process = process
         try:
-            completed = subprocess.run(
-                command,
-                check=False,
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=self.config.timeout_sec,
-            )
+            stdout, stderr = process.communicate(timeout=self.config.timeout_sec)
         except subprocess.TimeoutExpired as exc:
+            self._terminate_process(process)
             raise RuntimeError(
                 f"Creative runtime timed out after {self.config.timeout_sec} seconds."
             ) from exc
+        finally:
+            if self._process is process and process.poll() is not None:
+                self._process = None
 
         duration_ms = (perf_counter() - started) * 1000.0
-        if completed.returncode != 0:
+        if process.returncode != 0:
             raise RuntimeError(
                 "Creative runtime failed "
-                f"with exit code {completed.returncode}: {_tail(completed.stderr)}"
+                f"with exit code {process.returncode}: {_tail(stderr)}"
             )
         if not request.output_path.is_file():
             raise RuntimeError(
@@ -159,11 +165,18 @@ class StableDiffusionCppProvider:
             metadata={
                 "command": shlex.join(command),
                 "duration_ms": duration_ms,
-                "returncode": completed.returncode,
-                "stdout_tail": _tail(completed.stdout),
-                "stderr_tail": _tail(completed.stderr),
+                "pid": process.pid,
+                "returncode": process.returncode,
+                "stdout_tail": _tail(stdout),
+                "stderr_tail": _tail(stderr),
             },
         )
+
+    def close(self) -> None:
+        process = self._process
+        self._process = None
+        if process is not None:
+            self._terminate_process(process)
 
     def _command(self, request: CreativeRequest) -> list[str]:
         command = [
@@ -207,6 +220,21 @@ class StableDiffusionCppProvider:
             command.extend(["--strength", str(self.config.strength)])
         return command
 
+    def _terminate_process(
+        self,
+        process: subprocess.Popen[str],
+        *,
+        timeout_sec: float = 5.0,
+    ) -> None:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=timeout_sec)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
 
 @dataclass
 class GenerativeProcessor:
@@ -230,6 +258,7 @@ class GenerativeProcessor:
             )
 
         started = perf_counter()
+        provider: CreativeProvider | None = None
         try:
             source = select_creative_source(context, image)
             with TemporaryDirectory(prefix="filmpipe-creative-") as temporary_dir:
@@ -246,16 +275,23 @@ class GenerativeProcessor:
                     provider.model_id,
                     extra={"processor": self.name},
                 )
-                provider_result = provider.generate(
-                    CreativeRequest(
-                        source_path=source_path,
-                        prompt=prompt,
-                        job_id=context.job_id,
-                        image_id=context.image_id,
-                        output_path=output_path,
-                        source_kind=source.kind,
+                with ai_runtime_lifecycle(
+                    provider,
+                    logger=context.logger,
+                    processor=self.name,
+                    stage=self.name,
+                    provider=runtime_label(provider, "creative"),
+                ) as active_provider:
+                    provider_result = active_provider.generate(
+                        CreativeRequest(
+                            source_path=source_path,
+                            prompt=prompt,
+                            job_id=context.job_id,
+                            image_id=context.image_id,
+                            output_path=output_path,
+                            source_kind=source.kind,
+                        )
                     )
-                )
                 artifact = context.artifact_store.save_artifact(
                     context.job_id,
                     context.image_id,
