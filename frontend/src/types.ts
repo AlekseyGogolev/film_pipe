@@ -2,6 +2,8 @@ export type InputProcessingMode = "already_positive" | "bw_negative";
 
 export type RestorationMode = "off" | "telea" | "lama";
 
+export type FinalProcessingMode = "standard" | "creative";
+
 export type ProcessingStatus =
   | "pending"
   | "running"
@@ -9,7 +11,7 @@ export type ProcessingStatus =
   | "partial_success"
   | "failed";
 
-export type ArtifactType = "original" | "positive" | "restored";
+export type ArtifactType = "original" | "positive" | "restored" | "creative";
 
 export interface ProcessingError {
   stage: string;
@@ -39,6 +41,7 @@ export interface Job {
   status: ProcessingStatus;
   input_processing: InputProcessingMode;
   restoration: RestorationMode;
+  final_processing: FinalProcessingMode;
   created_at: string;
   updated_at: string;
   images: ImageResult[];

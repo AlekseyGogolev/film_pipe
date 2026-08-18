@@ -16,6 +16,7 @@ import { apiUrl, createJob, getJob } from "./api";
 import type {
   Artifact,
   ArtifactType,
+  FinalProcessingMode,
   InputProcessingMode,
   ImageResult,
   Job,
@@ -69,6 +70,26 @@ const RESTORATION_MODES: Array<{
   },
 ];
 
+const FINAL_PROCESSING_OPTIONS: Array<{
+  id: FinalProcessingMode;
+  label: string;
+  shortLabel: string;
+  title: string;
+}> = [
+  {
+    id: "standard",
+    label: "Standard",
+    shortLabel: "STD",
+    title: "Run only the technical processing pipeline.",
+  },
+  {
+    id: "creative",
+    label: "Creative",
+    shortLabel: "CR",
+    title: "Run Creative as the final stage and save a separate artifact.",
+  },
+];
+
 const STATUS_LABELS: Record<ProcessingStatus, string> = {
   pending: "Ожидает",
   running: "Обработка",
@@ -96,13 +117,24 @@ const RESTORATION_LABELS: Record<RestorationMode, string> = {
   lama: "LaMa",
 };
 
+const FINAL_PROCESSING_LABELS: Record<FinalProcessingMode, string> = {
+  standard: "Standard",
+  creative: "Creative",
+};
+
 const ARTIFACT_LABELS: Record<ArtifactType, string> = {
   original: "Original",
   positive: "Positive",
   restored: "Restored",
+  creative: "Creative",
 };
 
-const ARTIFACT_ORDER: ArtifactType[] = ["original", "positive", "restored"];
+const ARTIFACT_ORDER: ArtifactType[] = [
+  "original",
+  "positive",
+  "restored",
+  "creative",
+];
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -110,6 +142,9 @@ export default function App() {
   const [inputProcessing, setInputProcessing] =
     useState<InputProcessingMode>("bw_negative");
   const [restoration, setRestoration] = useState<RestorationMode>("off");
+  const [finalProcessing, setFinalProcessing] =
+    useState<FinalProcessingMode>("standard");
+  const [creativePrompt, setCreativePrompt] = useState("");
   const [job, setJob] = useState<Job | null>(null);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -166,7 +201,9 @@ export default function App() {
     return () => window.clearInterval(intervalId);
   }, [job]);
 
-  const canSubmit = files.length > 0 && !submitting;
+  const promptReady =
+    finalProcessing === "standard" || creativePrompt.trim().length > 0;
+  const canSubmit = files.length > 0 && promptReady && !submitting;
 
   function handleFiles(event: ChangeEvent<HTMLInputElement>) {
     setFiles(Array.from(event.target.files ?? []));
@@ -182,7 +219,13 @@ export default function App() {
     setError(null);
     setJob(null);
     try {
-      const nextJob = await createJob(files, inputProcessing, restoration);
+      const nextJob = await createJob(
+        files,
+        inputProcessing,
+        restoration,
+        finalProcessing,
+        creativePrompt,
+      );
       setJob(nextJob);
       setSelectedImageId(nextJob.images[0]?.id ?? null);
     } catch (submitError) {
@@ -252,7 +295,9 @@ export default function App() {
             type="button"
             disabled={!canSubmit}
             onClick={submitJob}
-            title="Запустить обработку"
+            title={
+              promptReady ? "Запустить обработку" : "Введите Creative Prompt"
+            }
           >
             <Play size={18} />
             {submitting ? "Обработка..." : "Process"}
@@ -311,7 +356,48 @@ export default function App() {
               ))}
             </div>
           </label>
+
+          <label className="optionField">
+            <span>Final Processing</span>
+            <div
+              className="choiceGroup finalProcessingGroup"
+              role="radiogroup"
+              aria-label="Final Processing"
+            >
+              {FINAL_PROCESSING_OPTIONS.map((item) => (
+                <button
+                  key={item.id}
+                  className={`choiceButton finalProcessingButton ${
+                    finalProcessing === item.id ? "active" : ""
+                  }`}
+                  type="button"
+                  disabled={submitting}
+                  onClick={() => setFinalProcessing(item.id)}
+                  title={item.title}
+                  aria-pressed={finalProcessing === item.id}
+                >
+                  <span>{item.shortLabel}</span>
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          </label>
         </div>
+
+        {finalProcessing === "creative" ? (
+          <label className="optionField promptField">
+            <span>Creative Prompt</span>
+            <textarea
+              className="promptTextArea"
+              value={creativePrompt}
+              disabled={submitting}
+              rows={3}
+              maxLength={1200}
+              placeholder="Preserve the composition and make the photo look like a clean archival print"
+              onChange={(event) => setCreativePrompt(event.target.value)}
+            />
+          </label>
+        ) : null}
       </section>
 
       {error ? (
@@ -352,6 +438,7 @@ export default function App() {
               <div className="jobMeta">
                 <span>{INPUT_PROCESSING_LABELS[job.input_processing]}</span>
                 <span>{RESTORATION_LABELS[job.restoration]}</span>
+                <span>{FINAL_PROCESSING_LABELS[job.final_processing]}</span>
               </div>
 
               {job.errors.length ? <ErrorList errors={job.errors} /> : null}

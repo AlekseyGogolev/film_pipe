@@ -1,4 +1,9 @@
-import type { InputProcessingMode, Job, RestorationMode } from "./types";
+import type {
+  FinalProcessingMode,
+  InputProcessingMode,
+  Job,
+  RestorationMode,
+} from "./types";
 
 const configuredBase = import.meta.env.VITE_FILMPIPE_API_BASE ?? "/api";
 export const API_BASE = configuredBase.replace(/\/$/, "");
@@ -16,10 +21,19 @@ export async function createJob(
   files: File[],
   inputProcessing: InputProcessingMode,
   restoration: RestorationMode,
+  finalProcessing: FinalProcessingMode,
+  creativePrompt?: string,
 ): Promise<Job> {
   const body = new FormData();
   body.append("input_processing", inputProcessing);
   body.append("restoration", restoration);
+  body.append("final_processing", finalProcessing);
+  if (finalProcessing === "creative") {
+    const normalizedPrompt = (creativePrompt ?? "").trim();
+    if (normalizedPrompt) {
+      body.append("creative_prompt", normalizedPrompt);
+    }
+  }
   for (const file of files) {
     body.append("files", file);
   }

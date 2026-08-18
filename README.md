@@ -288,6 +288,25 @@ VITE_FILMPIPE_API_BASE=http://127.0.0.1:8000 npm run dev
 
 The frontend uses only API response URLs for artifact preview/download and does not depend on filesystem paths.
 
+Frontend controls match the backend contract:
+
+```text
+Input Processing
+[ Already Positive ] [ Negative -> Positive ]
+
+Restoration
+[ Off ] [ TELEA ] [ LaMa ]
+
+Final Processing
+[ Standard ] [ Creative ]
+```
+
+When Creative is selected, the prompt field appears and must be non-empty before
+submission. The UI sends `final_processing` for every job and sends
+`creative_prompt` only for Creative jobs. Returned artifacts are shown in API
+order `original`, `positive`, `restored`, `creative`; recoverable Creative
+errors do not hide previous technical artifacts.
+
 ## Supported Image Formats
 
 MVP input formats:
@@ -399,7 +418,7 @@ Log records include `job_id`, `image_id`, and `processor` context. User-facing e
 - Preview PNGs are display representations. Downloads remain the stored
   artifact format and bit depth.
 - No film border detection, frame cropping, rotation, colorization, Creative
-  frontend controls, Creative server warm pool, or job queue is implemented.
+  server warm pool, or job queue is implemented.
   The current Creative backend provider is synchronous CLI-first and inherits
   Agent 1's FLUX non-commercial license limitation unless configured otherwise.
 - Metadata and ICC profiles are not preserved in generated positive artifacts.

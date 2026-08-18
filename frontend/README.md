@@ -43,17 +43,19 @@ npm run build
 
 The UI talks only to the FilmPipe HTTP API:
 
-- `POST /jobs` with multipart `input_processing=already_positive|bw_negative`, `restoration=off|telea|lama`, and one or more `files`.
+- `POST /jobs` with multipart `input_processing=already_positive|bw_negative`, `restoration=off|telea|lama`, `final_processing=standard|creative`, and one or more `files`.
+- `creative_prompt` is sent only when `final_processing=creative`; the Process button is disabled until the prompt is non-empty.
 - `already_positive` decodes the uploaded source as the working positive without inversion or B&W-negative preparation.
 - `bw_negative` runs the B&W negative-to-positive conversion path.
 - `restoration=off|telea|lama`; the UI defaults to `off` unless the user explicitly chooses restoration.
+- `final_processing=standard|creative`; the UI defaults to `standard`, which does not start the Creative runtime.
 - `GET /jobs/{job_id}` for polling if a job is pending/running.
 - `preview_url` and `download_url` from artifact responses.
 - `download_url` from the job response for batch ZIP export.
 
-The active controls are file selection, process action, Input Processing, and Restoration. Future colorization/creative controls are not shown in the current runtime UI.
+The active controls are file selection, process action, Input Processing, Restoration, and Final Processing. Creative prompt input appears only for Creative jobs.
 
-The UI renders only public artifacts returned by the API, ordered as `original`, `positive`, `restored`. Already-positive jobs therefore show `Original` and, when restoration runs successfully, `Restored`; they do not show an empty or synthetic `Positive` card.
+The UI renders only public artifacts returned by the API, ordered as `original`, `positive`, `restored`, `creative`. Already-positive jobs therefore show `Original` and, when restoration runs successfully, `Restored`; they do not show an empty or synthetic `Positive` card. Recoverable Creative failures still leave earlier artifacts visible.
 
 ## Preview / Download
 

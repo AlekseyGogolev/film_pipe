@@ -35,7 +35,8 @@ body {
 }
 
 button,
-input {
+input,
+textarea {
   font: inherit;
 }
 
@@ -133,7 +134,10 @@ a {
 }
 
 .controlRowOptions {
-  grid-template-columns: minmax(280px, 1fr) minmax(280px, 1fr);
+  grid-template-columns:
+    minmax(300px, 1.2fr)
+    minmax(240px, 0.9fr)
+    minmax(240px, 0.9fr);
 }
 
 .fileControl,
@@ -298,6 +302,42 @@ button:disabled,
 
 .restorationButton {
   flex-basis: 94px;
+}
+
+.finalProcessingGroup {
+  width: 100%;
+}
+
+.finalProcessingButton {
+  flex-basis: 112px;
+}
+
+.promptField {
+  margin-top: -2px;
+}
+
+.promptTextArea {
+  display: block;
+  width: 100%;
+  min-height: 88px;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px 12px;
+  color: var(--ink);
+  line-height: 1.35;
+  outline: none;
+}
+
+.promptTextArea:focus {
+  border-color: var(--teal);
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.promptTextArea:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
 }
 
 .errorBanner {

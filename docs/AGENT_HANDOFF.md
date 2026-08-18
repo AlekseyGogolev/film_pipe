@@ -221,12 +221,14 @@ TIFF `positive` artifact. `generative_processing` runs only for
 
 ## Frontend
 
-The React/Vite frontend lives in `frontend/`. It has not yet been updated for
-the backend Creative contract, so it currently sends only:
+The React/Vite frontend lives in `frontend/`. It sends the current backend
+contract:
 
 ```text
 input_processing
 restoration
+final_processing
+creative_prompt only when final_processing=creative
 files
 ```
 
@@ -236,16 +238,20 @@ Active controls:
 - clear selection;
 - process action;
 - Input Processing: Already Positive / Negative -> Positive;
-- Restoration: Off / TELEA / LaMa.
+- Restoration: Off / TELEA / LaMa;
+- Final Processing: Standard / Creative.
 
-Agent 3 should add Final Processing controls and `creative` artifact rendering.
-Until then, the UI renders artifacts returned by the API, ordered as:
+The Creative prompt field appears only when Creative is selected, and submit is
+disabled until it is non-empty. The UI renders artifacts returned by the API,
+ordered as:
 
 ```text
-original, positive, restored
+original, positive, restored, creative
 ```
 
 It does not show placeholder `Positive` cards for already-positive inputs.
+Recoverable Creative failures still display earlier `original`, `positive`, or
+`restored` artifacts returned by the API.
 
 ## How to Run
 
@@ -300,8 +306,7 @@ ZIP export, logging context, and frontend TypeScript/Vite build.
 - Preview PNGs are display representations; downloads remain stored artifact
   format and bit depth.
 - No film border detection, frame cropping, rotation, colorization, Creative
-  frontend controls, Creative server warm pool, accounts/auth, persistent DB,
-  or job queue is implemented.
+  server warm pool, accounts/auth, persistent DB, or job queue is implemented.
 
 ## Creative Runtime Env Vars
 
