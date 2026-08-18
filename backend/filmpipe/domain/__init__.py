@@ -3,6 +3,7 @@
 from filmpipe.domain.models import (
     Artifact,
     ArtifactType,
+    FinalProcessingMode,
     ImageProcessingResult,
     InputProcessingMode,
     ProcessingError,
@@ -22,6 +23,7 @@ __all__ = [
     "Artifact",
     "ArtifactStore",
     "ArtifactType",
+    "FinalProcessingMode",
     "ImageProcessingResult",
     "InputProcessingMode",
     "ProcessingContext",

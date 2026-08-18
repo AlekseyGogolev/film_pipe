@@ -19,6 +19,7 @@ from filmpipe.api.app import create_app
 from filmpipe.application.jobs import InMemoryJobRegistry, JobService
 from filmpipe.domain.models import (
     ArtifactType,
+    FinalProcessingMode,
     InputProcessingMode,
     ProcessingOptions,
     RestorationMode,
@@ -156,6 +157,8 @@ def _default_test_pipeline(options: ProcessingOptions | None = None) -> Processi
         ]
     if options.restoration != RestorationMode.OFF:
         processors.append(RestoredArtifactStubProcessor())
+    if options.final_processing == FinalProcessingMode.CREATIVE:
+        processors.append(CreativeArtifactStubProcessor())
     return ProcessingPipeline(processors)
 
 
@@ -201,6 +204,42 @@ class RestoredArtifactStubProcessor:
                 temporary_path,
             )
         return ProcessorResult.success(image=image, artifacts=[artifact])
+
+
+@dataclass
+class CreativeArtifactStubProcessor:
+    name: str = "generative_processing"
+    optional: bool = True
+
+    def process(self, image: Any, context: ProcessingContext) -> ProcessorResult:
+        if context.working_positive is None:
+            raise RuntimeError("missing working positive")
+
+        output = _to_png_stub_image(np.asarray(context.working_positive))
+        with TemporaryDirectory(prefix="filmpipe-test-creative-") as temporary_dir:
+            temporary_path = Path(temporary_dir) / "creative.png"
+            ok, encoded = cv2.imencode(".png", output)
+            assert ok
+            temporary_path.write_bytes(encoded.tobytes())
+            artifact = context.artifact_store.save_artifact(
+                context.job_id,
+                context.image_id,
+                ArtifactType.CREATIVE,
+                temporary_path,
+            )
+        return ProcessorResult.success(image=image, artifacts=[artifact])
+
+
+def _to_png_stub_image(image: np.ndarray) -> np.ndarray:
+    if image.dtype == np.uint8:
+        return image
+    if image.dtype == np.uint16:
+        return np.rint(image.astype(np.float32) / np.iinfo(np.uint16).max * 255).astype(
+            np.uint8
+        )
+    if np.issubdtype(image.dtype, np.floating):
+        return np.rint(np.clip(image, 0.0, 1.0) * 255).astype(np.uint8)
+    raise AssertionError(f"unsupported stub image dtype: {image.dtype}")
 
 
 def _negative_upload(tmp_path, filename: str = "scan.tiff") -> tuple[str, bytes, str]:
@@ -268,6 +307,7 @@ def test_create_job_single_success_and_artifact_download(tmp_path):
     assert job["status"] == "success"
     assert job["input_processing"] == "bw_negative"
     assert job["restoration"] == "off"
+    assert job["final_processing"] == "standard"
     assert len(job["images"]) == 1
 
     image = job["images"][0]
@@ -408,7 +448,7 @@ def test_unknown_job_form_field_returns_clear_400(tmp_path):
     detail = response.json()["detail"]
     assert "Unknown form fields" in detail
     assert "unexpected" in detail
-    assert "files, input_processing, restoration" in detail
+    assert "files, input_processing, restoration, final_processing, creative_prompt" in detail
 
 
 def test_already_positive_off_returns_only_original_artifact(tmp_path):
@@ -469,6 +509,65 @@ def test_restoration_values_are_accepted_and_serialized(tmp_path):
         assert response.status_code == 201
         job = response.json()
         assert job["restoration"] == restoration
+
+
+def test_final_processing_values_are_accepted_and_serialized(tmp_path):
+    client = _client(tmp_path)
+
+    standard = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "bw_negative", "final_processing": "standard"},
+        files=[("files", _negative_upload(tmp_path, "standard.tiff"))],
+    )
+    assert standard.status_code == 201
+    assert standard.json()["final_processing"] == "standard"
+
+    creative = client.post_multipart(
+        "/jobs",
+        data={
+            "input_processing": "bw_negative",
+            "final_processing": "creative",
+            "creative_prompt": "clean archival print",
+        },
+        files=[("files", _negative_upload(tmp_path, "creative.tiff"))],
+    )
+    assert creative.status_code == 201
+    job = creative.json()
+    assert job["final_processing"] == "creative"
+    artifacts = {artifact["type"] for artifact in job["images"][0]["artifacts"]}
+    assert artifacts == {"original", "positive", "creative"}
+
+
+def test_invalid_final_processing_value_returns_clear_400(tmp_path):
+    client = _client(tmp_path)
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "bw_negative", "final_processing": "magic"},
+        files=[("files", _negative_upload(tmp_path))],
+    )
+
+    assert response.status_code == 400
+    assert "Final processing must be one of" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("data", [
+    {"input_processing": "bw_negative", "final_processing": "creative"},
+    {
+        "input_processing": "bw_negative",
+        "final_processing": "creative",
+        "creative_prompt": "   ",
+    },
+])
+def test_creative_requires_non_blank_prompt(tmp_path, data):
+    client = _client(tmp_path)
+    response = client.post_multipart(
+        "/jobs",
+        data=data,
+        files=[("files", _negative_upload(tmp_path))],
+    )
+
+    assert response.status_code == 400
+    assert "creative_prompt is required" in response.json()["detail"]
 
 
 def test_invalid_restoration_value_returns_clear_400(tmp_path):

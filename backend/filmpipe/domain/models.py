@@ -21,10 +21,16 @@ class RestorationMode(str, Enum):
     LAMA = "lama"
 
 
+class FinalProcessingMode(str, Enum):
+    STANDARD = "standard"
+    CREATIVE = "creative"
+
+
 class ArtifactType(str, Enum):
     ORIGINAL = "original"
     POSITIVE = "positive"
     RESTORED = "restored"
+    CREATIVE = "creative"
 
 
 class ProcessingStatus(str, Enum):
@@ -39,6 +45,8 @@ class ProcessingStatus(str, Enum):
 class ProcessingOptions:
     input_processing: InputProcessingMode = InputProcessingMode.BW_NEGATIVE
     restoration: RestorationMode = RestorationMode.OFF
+    final_processing: FinalProcessingMode = FinalProcessingMode.STANDARD
+    creative_prompt: str | None = None
 
 
 @dataclass(frozen=True)

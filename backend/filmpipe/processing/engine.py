@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from filmpipe.domain.models import (
     ArtifactType,
+    FinalProcessingMode,
     ImageProcessingResult,
     InputProcessingMode,
     ProcessingError,
@@ -20,6 +21,7 @@ from filmpipe.processing.processors import (
     AIRestorationProcessor,
     DecodeBWImageProcessor,
     DecodePositiveImageProcessor,
+    GenerativeProcessor,
     NegativeConverterProcessor,
     PositiveArtifactWriterProcessor,
     ToneNormalizerProcessor,
@@ -77,9 +79,10 @@ def process_image(
     )
 
     logger.info(
-        "pipeline_ready input_processing=%s restoration=%s processors=%s",
+        "pipeline_ready input_processing=%s restoration=%s final_processing=%s processors=%s",
         options.input_processing.value,
         options.restoration.value,
+        options.final_processing.value,
         ",".join(processor.name for processor in pipeline.processors),
     )
     result = pipeline.run(original.path, context, result)
@@ -110,4 +113,6 @@ def default_processors(options: ProcessingOptions | None = None) -> list[Process
 
     if options.restoration != RestorationMode.OFF:
         processors.append(AIRestorationProcessor())
+    if options.final_processing == FinalProcessingMode.CREATIVE:
+        processors.append(GenerativeProcessor())
     return processors

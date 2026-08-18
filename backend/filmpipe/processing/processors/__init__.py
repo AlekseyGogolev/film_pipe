@@ -8,6 +8,7 @@ from filmpipe.processing.processors.images import (
     SUPPORTED_IMAGE_SUFFIXES,
     ToneNormalizerProcessor,
 )
+from filmpipe.processing.generative import GenerativeProcessor
 from filmpipe.processing.restoration import AIRestorationProcessor
 from filmpipe.processing.processors.stubs import (
     FailingProcessor,
@@ -20,6 +21,7 @@ __all__ = [
     "DecodePositiveImageProcessor",
     "AIRestorationProcessor",
     "FailingProcessor",
+    "GenerativeProcessor",
     "NegativeConverterProcessor",
     "NoopProcessor",
     "PositiveArtifactStubProcessor",

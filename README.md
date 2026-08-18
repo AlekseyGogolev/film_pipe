@@ -1,15 +1,16 @@
 # FilmPipe
 
-FilmPipe is a local application foundation for processing film scans. The current MVP has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a local HTTP API, a B&W negative-to-positive path, already-positive input handling, optional AI restoration, and a minimal React/Vite frontend.
+FilmPipe is a local application foundation for processing film scans. The current MVP has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a local HTTP API, a B&W negative-to-positive path, already-positive input handling, optional AI restoration, optional backend Creative processing, and a minimal React/Vite frontend.
 
-The processing pipeline is built from two independent job options:
+The processing pipeline is built from three independent job options:
 
 ```text
 input_processing = already_positive | bw_negative
 restoration      = off | telea | lama
+final_processing = standard | creative
 ```
 
-Already-positive inputs are decoded as the working positive without inversion, B&W preparation, or a synthetic public `positive` artifact. B&W negative inputs are decoded, converted to positive, tone-normalized, written as a 16-bit TIFF `positive` artifact, then optionally restored.
+Already-positive inputs are decoded as the working positive without inversion, B&W preparation, or a synthetic public `positive` artifact. B&W negative inputs are decoded, converted to positive, tone-normalized, written as a 16-bit TIFF `positive` artifact, then optionally restored. Creative processing runs last when requested and writes a separate `creative` artifact without replacing `original`, `positive`, or `restored`.
 
 ## Requirements
 
@@ -18,6 +19,7 @@ Already-positive inputs are decoded as the working positive without inversion, B
 - Processing dependencies: NumPy and OpenCV
 - Local API dependencies: FastAPI, python-multipart, and Uvicorn
 - Optional AI restoration dependencies: PyTorch for the Microsoft detector, and the LaMa runtime dependencies only when using `restoration=lama`
+- Optional Creative runtime: prepared stable-diffusion.cpp CLI and model files only when using `final_processing=creative`
 
 ## Installation
 
@@ -114,6 +116,44 @@ python -m pip install -r requirements-lama.txt
 
 Production lookup uses `FILMPIPE_AI_MODELS_ROOT` when set. Otherwise it checks `models/ai_restoration` and then the existing `experiments/ai_restoration/models` directory. `restoration=off` never loads the detector or LaMa, and `restoration=telea` does not require LaMa files to load.
 
+## Creative Runtime
+
+Creative modes:
+
+```text
+standard  technical pipeline only, no Creative runtime
+creative  selected technical/restored source + creative_prompt -> creative PNG
+```
+
+Creative is a backend late-stage processor. It selects the source from the
+processing context in this order: `restored`, `positive`, already-positive
+`working_positive`, then immutable `original`. It converts that source to a
+temporary 8-bit PNG for the provider and saves only a separate `creative`
+artifact.
+
+The current provider is a stable-diffusion.cpp CLI adapter using the Agent 1
+FLUX.1 Kontext Q4 Vulkan experiment paths by default. Prepare the assets under
+`experiments/creative_edit/` as documented in
+`docs/creative_research_handoff_agent1.md`, or override paths with env vars:
+
+```bash
+export FILMPIPE_CREATIVE_SD_CLI=experiments/creative_edit/runtime/sd-master-de298c2-bin-Linux-Ubuntu-24.04-x86_64-vulkan/sd-cli
+export FILMPIPE_CREATIVE_DIFFUSION_MODEL=experiments/creative_edit/models/flux/flux1-kontext-dev-Q4_K_M.gguf
+export FILMPIPE_CREATIVE_VAE=experiments/creative_edit/models/flux/ae.safetensors
+export FILMPIPE_CREATIVE_CLIP_L=experiments/creative_edit/models/flux/clip_l.safetensors
+export FILMPIPE_CREATIVE_T5XXL=experiments/creative_edit/models/flux/t5xxl_fp16.safetensors
+```
+
+Optional tuning env vars include `FILMPIPE_CREATIVE_BACKEND`,
+`FILMPIPE_CREATIVE_PARAMS_BACKEND`, `FILMPIPE_CREATIVE_MAX_VRAM`,
+`FILMPIPE_CREATIVE_WIDTH`, `FILMPIPE_CREATIVE_HEIGHT`,
+`FILMPIPE_CREATIVE_STEPS`, `FILMPIPE_CREATIVE_SEED`,
+`FILMPIPE_CREATIVE_STRENGTH`, and `FILMPIPE_CREATIVE_TIMEOUT_SEC`.
+
+Missing runtime or model files are reported as recoverable Creative failures:
+previous `original`, `positive`, or `restored` artifacts remain available and
+the image can report `partial_success`.
+
 ## Local API
 
 Start the local API:
@@ -136,13 +176,29 @@ Create a processing job with multipart form data:
 curl -X POST http://127.0.0.1:8000/jobs \
   -F "input_processing=bw_negative" \
   -F "restoration=off" \
+  -F "final_processing=standard" \
   -F "files=@scan_001.tiff" \
   -F "files=@scan_002.tiff"
 ```
 
 Use `input_processing=already_positive` for scans that are already positive.
 The default request options are `input_processing=bw_negative` and
-`restoration=off`.
+`restoration=off`, `final_processing=standard`.
+
+Creative backend processing uses the same endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:8000/jobs \
+  -F "input_processing=bw_negative" \
+  -F "restoration=off" \
+  -F "final_processing=creative" \
+  -F "creative_prompt=preserve the composition and make the photo look like a clean archival print" \
+  -F "files=@scan_001.tiff"
+```
+
+`creative_prompt` is required and trimmed non-empty only when
+`final_processing=creative`. `final_processing=standard` does not start or
+contact the Creative runtime.
 
 `POST /jobs` processes synchronously for the MVP and returns the final job state. Frontend polling should use:
 
@@ -158,6 +214,7 @@ id
 status
 input_processing
 restoration
+final_processing
 images[]
 errors[]
 download_url
@@ -192,9 +249,15 @@ Batch ZIP export:
 GET /jobs/{job_id}/download
 ```
 
-The ZIP contains existing generated result artifacts such as `positive` and `restored`; immutable `original` files are available per image but are not included in batch result ZIPs. For `already_positive + off`, no generated artifact exists, so the batch ZIP endpoint returns `404`.
+The ZIP contains existing generated result artifacts such as `positive`,
+`restored`, and `creative`; immutable `original` files are available per image
+but are not included in batch result ZIPs. For `already_positive + off +
+standard`, no generated artifact exists, so the batch ZIP endpoint returns
+`404`.
 
-Requests with unknown form fields receive a clear `400` response. The API accepts only `files`, `input_processing`, and `restoration` for job creation.
+Requests with unknown form fields receive a clear `400` response. The API
+accepts only `files`, `input_processing`, `restoration`, `final_processing`,
+and `creative_prompt` for job creation.
 
 ## Local Frontend
 
@@ -252,24 +315,28 @@ The filesystem storage layout is:
 data/jobs/{job_id}/{image_id}/original/{source_filename}
 data/jobs/{job_id}/{image_id}/positive/{safe_stem}_positive.tiff
 data/jobs/{job_id}/{image_id}/restored/{safe_stem}_restored.tiff
+data/jobs/{job_id}/{image_id}/creative/{safe_stem}_creative.png
 ```
 
 `original` artifacts are immutable copies of uploaded files. `positive`
 artifacts are generated for B&W negative conversion and do not replace
-originals. `restored` artifacts are optional derivatives. Batch ZIP downloads
-include generated result artifacts such as `positive` and `restored` and exclude
+originals. `restored` artifacts are optional derivatives. `creative` artifacts
+are optional final derivatives. Batch ZIP downloads include generated result
+artifacts such as `positive`, `restored`, and `creative` and exclude
 immutable originals.
 
 Public artifact semantics:
 
-| Input Processing | Restoration | Public Artifacts |
-| --- | --- | --- |
-| `already_positive` | `off` | `original` |
-| `already_positive` | `telea` | `original`, `restored` |
-| `already_positive` | `lama` | `original`, `restored` |
-| `bw_negative` | `off` | `original`, `positive` |
-| `bw_negative` | `telea` | `original`, `positive`, `restored` |
-| `bw_negative` | `lama` | `original`, `positive`, `restored` |
+| Input Processing | Restoration | Final Processing | Public Artifacts |
+| --- | --- | --- | --- |
+| `already_positive` | `off` | `standard` | `original` |
+| `already_positive` | `telea/lama` | `standard` | `original`, `restored` |
+| `bw_negative` | `off` | `standard` | `original`, `positive` |
+| `bw_negative` | `telea/lama` | `standard` | `original`, `positive`, `restored` |
+| `already_positive` | `off` | `creative` | `original`, `creative` |
+| `already_positive` | `telea/lama` | `creative` | `original`, `restored`, `creative` |
+| `bw_negative` | `off` | `creative` | `original`, `positive`, `creative` |
+| `bw_negative` | `telea/lama` | `creative` | `original`, `positive`, `restored`, `creative` |
 
 `bw_negative` execution plan:
 
@@ -285,6 +352,8 @@ percentile tone normalization: 0.5% / 99.5%
 16-bit TIFF positive artifact
 ↓
 optional restoration: off | TELEA | LaMa
+↓
+optional final creative processing
 ```
 
 If the tonal range is effectively flat, normalization is skipped and the converted image is preserved.
@@ -297,11 +366,15 @@ OpenCV decode
 working positive
 ↓
 optional restoration: off | TELEA | LaMa
+↓
+optional final creative processing
 ```
 
 For `already_positive`, `NegativeConverterProcessor`, `ToneNormalizerProcessor`, and `PositiveArtifactWriterProcessor` are not added to the plan.
 
-Restoration failures are recoverable: the base result remains available, `restored` is omitted, and the image/job can report `partial_success`.
+Restoration and Creative failures are recoverable: the base result remains
+available, the failed derivative is omitted, and the image/job can report
+`partial_success`.
 
 ## Logging
 
@@ -325,7 +398,10 @@ Log records include `job_id`, `image_id`, and `processor` context. User-facing e
   for already-positive inputs.
 - Preview PNGs are display representations. Downloads remain the stored
   artifact format and bit depth.
-- No film border detection, frame cropping, rotation, colorization, or creative processing is implemented.
+- No film border detection, frame cropping, rotation, colorization, Creative
+  frontend controls, Creative server warm pool, or job queue is implemented.
+  The current Creative backend provider is synchronous CLI-first and inherits
+  Agent 1's FLUX non-commercial license limitation unless configured otherwise.
 - Metadata and ICC profiles are not preserved in generated positive artifacts.
 
 ## MVP Extension Points
@@ -338,4 +414,6 @@ Processing concepts:
 - `Colorizer`
 - `GenerativeProcessor`
 
-`DefectDetector` and `Restorer` now have production-local contracts for optional AI restoration. The remaining concepts are future extension points.
+`DefectDetector` and `Restorer` have production-local contracts for optional AI
+restoration. `GenerativeProcessor` has a backend provider boundary for optional
+Creative processing. `Colorizer` remains a future extension point.

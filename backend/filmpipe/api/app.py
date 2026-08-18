@@ -11,6 +11,7 @@ from filmpipe.application.jobs import InMemoryJobRegistry, JobService
 from filmpipe.domain.models import (
     Artifact,
     ArtifactType,
+    FinalProcessingMode,
     ImageProcessingResult,
     InputProcessingMode,
     ProcessingError,
@@ -68,6 +69,8 @@ def create_app(
         files: list[UploadFile] = File(...),
         input_processing: str = Form(InputProcessingMode.BW_NEGATIVE.value),
         restoration: str = Form(RestorationMode.OFF.value),
+        final_processing: str = Form(FinalProcessingMode.STANDARD.value),
+        creative_prompt: str | None = Form(None),
     ) -> dict[str, object]:
         if not files:
             raise HTTPException(status_code=400, detail="Добавьте хотя бы один файл.")
@@ -76,9 +79,16 @@ def create_app(
         _reject_unknown_job_fields(form.keys())
         input_processing_mode = _parse_input_processing(input_processing)
         restoration_mode = _parse_restoration_mode(restoration)
+        final_processing_mode = _parse_final_processing_mode(final_processing)
+        normalized_creative_prompt = _normalize_creative_prompt(
+            final_processing_mode,
+            creative_prompt,
+        )
         options = ProcessingOptions(
             input_processing=input_processing_mode,
             restoration=restoration_mode,
+            final_processing=final_processing_mode,
+            creative_prompt=normalized_creative_prompt,
         )
         with TemporaryDirectory(prefix="filmpipe-upload-") as temporary_dir:
             upload_paths: list[Path] = []
@@ -175,6 +185,7 @@ def _job_response(job: ProcessingJob) -> dict[str, object]:
         "status": job.status.value,
         "input_processing": job.options.input_processing.value,
         "restoration": job.options.restoration.value,
+        "final_processing": job.options.final_processing.value,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "images": [_image_response(job.id, result) for result in job.results],
@@ -214,7 +225,13 @@ def _error_response(error: ProcessingError) -> dict[str, object]:
 
 
 def _reject_unknown_job_fields(field_names: Iterable[str]) -> None:
-    allowed_fields = {"files", "input_processing", "restoration"}
+    allowed_fields = {
+        "files",
+        "input_processing",
+        "restoration",
+        "final_processing",
+        "creative_prompt",
+    }
     unknown_fields = sorted(set(field_names) - allowed_fields)
     if not unknown_fields:
         return
@@ -224,7 +241,8 @@ def _reject_unknown_job_fields(field_names: Iterable[str]) -> None:
         detail=(
             "Unknown form fields: "
             f"{', '.join(unknown_fields)}. "
-            "Allowed fields are: files, input_processing, restoration."
+            "Allowed fields are: files, input_processing, restoration, "
+            "final_processing, creative_prompt."
         ),
     )
 
@@ -251,6 +269,33 @@ def _parse_restoration_mode(value: str) -> RestorationMode:
             status_code=400,
             detail=f"Restoration must be one of: {allowed}.",
         ) from exc
+
+
+def _parse_final_processing_mode(value: str) -> FinalProcessingMode:
+    normalized = value.strip().lower()
+    try:
+        return FinalProcessingMode(normalized)
+    except ValueError as exc:
+        allowed = ", ".join(mode.value for mode in FinalProcessingMode)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Final processing must be one of: {allowed}.",
+        ) from exc
+
+
+def _normalize_creative_prompt(
+    final_processing: FinalProcessingMode,
+    creative_prompt: str | None,
+) -> str | None:
+    normalized = (creative_prompt or "").strip()
+    if final_processing == FinalProcessingMode.STANDARD:
+        return None
+    if not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail="creative_prompt is required when final_processing=creative.",
+        )
+    return normalized
 
 
 def _get_job(registry: InMemoryJobRegistry, job_id: str) -> ProcessingJob:

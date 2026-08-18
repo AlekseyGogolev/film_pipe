@@ -66,9 +66,10 @@ class JobService:
 
         logger = get_logger(job_id=job.id)
         logger.info(
-            "job_started input_processing=%s restoration=%s inputs=%s",
+            "job_started input_processing=%s restoration=%s final_processing=%s inputs=%s",
             options.input_processing.value,
             options.restoration.value,
+            options.final_processing.value,
             len(input_paths),
         )
 
