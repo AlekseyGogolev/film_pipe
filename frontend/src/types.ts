@@ -32,6 +32,7 @@ export interface ImageResult {
   id: string;
   filename: string;
   status: ProcessingStatus;
+  progress?: number;
   artifacts: Artifact[];
   errors: ProcessingError[];
 }
@@ -42,9 +43,18 @@ export interface Job {
   input_processing: InputProcessingMode;
   restoration: RestorationMode;
   final_processing: FinalProcessingMode;
+  creative_prompt: string | null;
   created_at: string;
   updated_at: string;
   images: ImageResult[];
   errors: ProcessingError[];
   download_url: string;
+  position?: number;
+  progress?: number;
+  legacy?: boolean;
+  inferred?: boolean;
+}
+
+export interface ListJobsResponse {
+  jobs: Job[];
 }

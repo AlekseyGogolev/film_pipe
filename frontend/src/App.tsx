@@ -1,5 +1,5 @@
 import type { ChangeEvent } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   CheckCircle2,
@@ -12,7 +12,15 @@ import {
   RefreshCw,
   XCircle,
 } from "lucide-react";
-import { apiUrl, createJob, getJob } from "./api";
+import { apiUrl, createJob, getJob, listJobs } from "./api";
+import {
+  hasActiveJobs,
+  isJobActive,
+  mergeNewestJobs,
+  newestJob,
+  upsertNewestJob,
+} from "./jobs";
+import { usePolling } from "./polling";
 import type {
   Artifact,
   ArtifactType,
@@ -146,9 +154,12 @@ export default function App() {
     useState<FinalProcessingMode>("standard");
   const [creativePrompt, setCreativePrompt] = useState("");
   const [job, setJob] = useState<Job | null>(null);
+  const [history, setHistory] = useState<Job[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pollError, setPollError] = useState<string | null>(null);
 
   const selectedImage = useMemo(() => {
     if (!job) {
@@ -185,21 +196,54 @@ export default function App() {
     }
   }, [job, selectedImageId]);
 
-  useEffect(() => {
-    if (!job || (job.status !== "pending" && job.status !== "running")) {
+  const activeJobId = job?.id ?? null;
+  const shouldPollActiveJob = isJobActive(job);
+  const shouldPollHistory = !historyLoaded || hasActiveJobs(history);
+  const visibleError = error ?? pollError;
+
+  const refreshActiveJob = useCallback(async () => {
+    if (!activeJobId) {
       return;
     }
 
-    const intervalId = window.setInterval(async () => {
-      try {
-        setJob(await getJob(job.id));
-      } catch (pollError) {
-        setError(errorMessage(pollError));
+    const nextJob = await getJob(activeJobId);
+    setPollError(null);
+    setJob((current) => {
+      if (!current || current.id !== nextJob.id) {
+        return current;
       }
-    }, 1500);
+      return newestJob(current, nextJob);
+    });
+    setHistory((current) => upsertNewestJob(current, nextJob));
+  }, [activeJobId]);
 
-    return () => window.clearInterval(intervalId);
-  }, [job]);
+  const refreshHistory = useCallback(async () => {
+    const response = await listJobs();
+    setPollError(null);
+    setHistoryLoaded(true);
+    setHistory((current) => mergeNewestJobs(current, response.jobs));
+    setJob((current) => {
+      if (!current) {
+        return current;
+      }
+      const listedJob = response.jobs.find((item) => item.id === current.id);
+      return listedJob ? newestJob(current, listedJob) : current;
+    });
+  }, []);
+
+  usePolling({
+    enabled: shouldPollActiveJob,
+    intervalMs: 1500,
+    poll: refreshActiveJob,
+    onError: (pollError) => setPollError(errorMessage(pollError)),
+  });
+
+  usePolling({
+    enabled: shouldPollHistory,
+    intervalMs: 3500,
+    poll: refreshHistory,
+    onError: (pollError) => setPollError(errorMessage(pollError)),
+  });
 
   const promptReady =
     finalProcessing === "standard" || creativePrompt.trim().length > 0;
@@ -217,6 +261,7 @@ export default function App() {
 
     setSubmitting(true);
     setError(null);
+    setPollError(null);
     setJob(null);
     try {
       const nextJob = await createJob(
@@ -227,6 +272,7 @@ export default function App() {
         creativePrompt,
       );
       setJob(nextJob);
+      setHistory((current) => upsertNewestJob(current, nextJob));
       setSelectedImageId(nextJob.images[0]?.id ?? null);
     } catch (submitError) {
       setError(errorMessage(submitError));
@@ -400,10 +446,10 @@ export default function App() {
         ) : null}
       </section>
 
-      {error ? (
+      {visibleError ? (
         <div className="errorBanner" role="alert">
           <AlertCircle size={18} />
-          {error}
+          {visibleError}
         </div>
       ) : null}
 

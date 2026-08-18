@@ -2,6 +2,7 @@ import type {
   FinalProcessingMode,
   InputProcessingMode,
   Job,
+  ListJobsResponse,
   RestorationMode,
 } from "./types";
 
@@ -46,6 +47,10 @@ export async function createJob(
 
 export async function getJob(jobId: string): Promise<Job> {
   return request<Job>(`/jobs/${jobId}`);
+}
+
+export async function listJobs(): Promise<ListJobsResponse> {
+  return request<ListJobsResponse>("/jobs");
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
