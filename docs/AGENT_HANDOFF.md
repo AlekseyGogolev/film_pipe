@@ -2,15 +2,17 @@
 
 ## Current MVP State
 
-FilmPipe supports a local synchronous processing flow:
+FilmPipe supports a local asynchronous processing flow:
 
 ```text
 multipart upload
--> input processing
--> optional restoration
--> optional creative final processing
--> per-image status/errors/artifacts
+-> stable job input staging
+-> persistent job manifest
+-> in-process background queue
+-> input processing / optional restoration / optional creative final processing
+-> persisted per-image status/errors/artifacts
 -> browser-friendly artifact preview/download
+-> persistent history/gallery
 -> batch ZIP download for generated artifacts
 ```
 
@@ -33,7 +35,8 @@ Dependency map:
 ```text
 Frontend / React UI
   -> HTTP API
-  -> Application / JobService + InMemoryJobRegistry
+  -> Application / JobService + JobQueue
+  -> Infrastructure / FileSystemJobRegistry
   -> Processing Engine
   -> ProcessingPipeline
   -> Processor contract and concrete processors
@@ -54,6 +57,11 @@ Important boundaries:
 - Processing Engine does not depend on HTTP/FastAPI.
 - Domain contracts do not depend on OpenCV, NumPy, FastAPI, PyTorch, or LaMa.
 - `FilmImage` remains processing-local.
+- Frontend talks only to the FilmPipe HTTP API and never inspects local
+  filesystem paths.
+- API responses do not expose local artifact paths.
+- Job manifests store API-safe data plus relative paths used internally to
+  rebuild `Artifact.path`.
 - Basic `bw_negative` conversion does not load AI runtime.
 - Restoration consumes `context.working_positive`, not a public `positive`
   artifact.
@@ -100,6 +108,12 @@ restoration=off
 final_processing=standard
 ```
 
+`POST /jobs` is now asynchronous. The request handler validates the multipart
+form, writes uploaded files to a stable job-owned directory, creates a
+`pending` job, persists `data/jobs/{job_id}/job.json`, enqueues background work,
+and returns HTTP `201` with the current job representation. Processing then
+runs in a single-process `ThreadPoolExecutor(max_workers=1)` queue.
+
 Job response shape:
 
 ```text
@@ -108,11 +122,23 @@ status
 input_processing
 restoration
 final_processing
+creative_prompt
 created_at
 updated_at
 images[]
 errors[]
 download_url
+legacy
+```
+
+Job status semantics:
+
+```text
+pending          job has been accepted before the worker starts
+running          at least one image is pending/running after processing starts
+success          all images succeeded
+failed           all images failed or a worker-level unrecoverable error failed the job
+partial_success  terminal mixed/recoverable state after active processing is done
 ```
 
 Image response shape:
@@ -148,6 +174,38 @@ Preview endpoints return browser-friendly PNG bytes generated from the stored
 artifact. Download endpoints return the stored artifact bytes and MIME type.
 Batch ZIP export excludes immutable originals and includes generated artifacts
 only, including `creative` when present.
+
+The frontend may request preview URLs with optional query strings such as
+`?max_edge=512` or `?max_edge=1920`. The current backend does not implement
+server-side preview resizing; FastAPI ignores the unknown query parameter and
+returns the normal PNG preview.
+
+## Persistent History
+
+Default storage root:
+
+```text
+data/jobs
+```
+
+Non-legacy job layout:
+
+```text
+data/jobs/{job_id}/job.json
+data/jobs/{job_id}/inputs/{index}/{safe_filename}
+data/jobs/{job_id}/{image_id}/original/{source_filename}
+data/jobs/{job_id}/{image_id}/positive/{safe_stem}_positive.tiff
+data/jobs/{job_id}/{image_id}/restored/{safe_stem}_restored.tiff
+data/jobs/{job_id}/{image_id}/creative/{safe_stem}_creative.png
+```
+
+`FileSystemJobRegistry` loads existing manifests at app startup and returns
+jobs newest-first from `GET /jobs`. Manifest artifact entries use
+`relative_path`, not absolute server paths. When a job directory has no
+`job.json`, the registry scans image artifact folders and reconstructs a legacy
+job where possible. Legacy jobs use valid default option values
+`bw_negative/off/standard` and include `legacy: true`; those options are
+inferred compatibility values, not guaranteed historical settings.
 
 ## Processing Plans
 
@@ -221,8 +279,14 @@ TIFF `positive` artifact. `generative_processing` runs only for
 
 ## Frontend
 
-The React/Vite frontend lives in `frontend/`. It sends the current backend
-contract:
+The React/Vite frontend lives in `frontend/`. It has two top-level views:
+
+```text
+Processing Console
+History Gallery
+```
+
+It sends the current backend contract:
 
 ```text
 input_processing
@@ -237,13 +301,25 @@ Active controls:
 - file selection;
 - clear selection;
 - process action;
+- Console/Gallery navigation;
 - Input Processing: Already Positive / Negative -> Positive;
 - Restoration: Off / TELEA / LaMa;
 - Final Processing: Standard / Creative.
 
 The Creative prompt field appears only when Creative is selected, and submit is
-disabled until it is non-empty. The UI renders artifacts returned by the API,
-ordered as:
+disabled until it is non-empty. After submit, the API returns quickly with a
+`pending` job and the console keeps polling until the job is terminal.
+
+Polling behavior:
+
+- active console job polls `GET /jobs/{job_id}` every 1.5 seconds while
+  `pending` or `running`;
+- history loads from `GET /jobs`, refreshes when Gallery opens, and polls every
+  3.5 seconds while history is not loaded or any listed job is active;
+- the polling hook prevents overlapping requests;
+- poll errors are surfaced without clearing the last known state.
+
+The UI renders artifacts returned by the API, ordered as:
 
 ```text
 original, positive, restored, creative
@@ -252,6 +328,16 @@ original, positive, restored, creative
 It does not show placeholder `Positive` cards for already-positive inputs.
 Recoverable Creative failures still display earlier `original`, `positive`, or
 `restored` artifacts returned by the API.
+
+Gallery job cards include best available thumbnail, short id, status,
+created/updated timestamps, image count, option chips, generated artifact chips,
+and batch ZIP action when generated artifacts exist. Thumbnail selection
+prefers `creative`, then `restored`, then `positive`, then `original`.
+
+Selecting a history job opens the same image/artifact detail renderer used by
+the console. Clicking a preview opens a fullscreen lightbox using `preview_url`
+for display and `download_url` for master download. The lightbox supports close
+button, Escape, and backdrop click.
 
 ## How to Run
 
@@ -289,14 +375,19 @@ npm run build
 ```
 
 Current tests cover direct engine invocation, standard and Creative backend
-runtime plans, public artifact semantics, API validation, restoration and
-Creative failure semantics, batch partial success, preview/download behavior,
-ZIP export, logging context, and frontend TypeScript/Vite build.
+runtime plans, public artifact semantics, API validation, async job creation,
+manifest persistence, reload from persistent history, legacy history
+reconstruction, restoration and Creative failure semantics, batch partial
+success, preview/download behavior, ZIP export, logging context, and frontend
+TypeScript/Vite build.
 
 ## Known Limitations
 
-- API job registry is in-memory; jobs disappear on server restart.
-- `POST /jobs` is synchronous for the MVP.
+- The queue is local and in-process. It is not durable across backend process
+  death and does not support cancellation.
+- Jobs completed before restart are restored from manifests, but a backend
+  restart during a running job is not resumed. Current startup loading does not
+  yet mark stale active manifests as failed.
 - FilmPipe does not auto-detect negative versus already-positive inputs.
 - TELEA and LaMa restoration need the Microsoft detector runtime; LaMa also
   needs prepared LaMa model files.
@@ -305,8 +396,11 @@ ZIP export, logging context, and frontend TypeScript/Vite build.
   experiment paths and is synchronous CLI-first.
 - Preview PNGs are display representations; downloads remain stored artifact
   format and bit depth.
+- Preview `max_edge` query parameters are frontend-compatible but not
+  implemented server-side yet.
 - No film border detection, frame cropping, rotation, colorization, Creative
-  server warm pool, accounts/auth, persistent DB, or job queue is implemented.
+  server warm pool, accounts/auth, persistent DB, external queue, or distributed
+  workers are implemented.
 
 ## Creative Runtime Env Vars
 
@@ -338,4 +432,6 @@ docs/FilmPipe_REFACTOR_AGENT_PLAN.md
 docs/refactor_handoff_agent1.md
 docs/refactor_handoff_agent2.md
 docs/refactor_final_audit.md
+docs/history_queue_frontend_agent_plan.md
+docs/history_queue_frontend_agent5_handoff.md
 ```

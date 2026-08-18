@@ -68,6 +68,8 @@ a {
 .paneHeader h2,
 .jobHeader h2,
 .resultHeader h2,
+.historyCardTitle h3,
+.lightboxHeader h2,
 .emptyState h2 {
   margin: 0;
   letter-spacing: 0;
@@ -76,6 +78,63 @@ a {
 .topBar h1 {
   font-size: 28px;
   line-height: 1.15;
+}
+
+.topActions,
+.viewTabs,
+.viewTab {
+  display: flex;
+  align-items: center;
+}
+
+.topActions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.viewTabs {
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #eef2ec;
+  padding: 3px;
+}
+
+.viewTab {
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 0 10px;
+  color: #4f6257;
+  cursor: pointer;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.viewTab:hover {
+  color: var(--teal-dark);
+}
+
+.viewTab.active {
+  border-color: #d8e2d4;
+  background: var(--panel);
+  color: var(--teal-dark);
+}
+
+.tabCount {
+  display: inline-grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 6px;
+  background: rgba(15, 118, 110, 0.1);
+  color: var(--teal-dark);
+  font-size: 12px;
 }
 
 .eyebrow {
@@ -161,6 +220,8 @@ a {
 .primaryButton,
 .downloadButton,
 .artifactLink,
+.historyZipButton,
+.lightboxDownload,
 .iconButton,
 .choiceButton {
   display: inline-flex;
@@ -183,7 +244,9 @@ a {
 
 .fileButton,
 .downloadButton,
-.artifactLink {
+.artifactLink,
+.historyZipButton,
+.lightboxDownload {
   padding: 0 14px;
 }
 
@@ -220,13 +283,51 @@ a {
   font-size: 13px;
 }
 
+.historyZipButton {
+  width: calc(100% - 24px);
+  min-height: 36px;
+  margin: 0 12px 12px;
+  border-color: #c38a32;
+  color: #643b06;
+  font-size: 13px;
+}
+
+.lightboxDownload {
+  min-height: 40px;
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+}
+
 .fileButton:hover,
 .iconButton:hover,
 .downloadButton:hover,
 .artifactLink:hover,
+.historyZipButton:hover,
 .choiceButton:not(:disabled):hover {
   border-color: var(--teal);
   background: #f0faf8;
+}
+
+.lightboxDownload:hover {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.fileButton:focus-visible,
+.primaryButton:focus-visible,
+.downloadButton:focus-visible,
+.artifactLink:focus-visible,
+.historyZipButton:focus-visible,
+.lightboxDownload:focus-visible,
+.iconButton:focus-visible,
+.choiceButton:focus-visible,
+.viewTab:focus-visible,
+.historyCardBody:focus-visible,
+.historyThumbButton:focus-visible,
+.previewButton:focus-visible {
+  outline: 3px solid rgba(15, 118, 110, 0.28);
+  outline-offset: 2px;
 }
 
 .primaryButton:not(:disabled):hover {
@@ -361,8 +462,18 @@ button:disabled,
   align-items: start;
 }
 
+.galleryWorkspace {
+  display: grid;
+  grid-template-columns: minmax(320px, 410px) minmax(0, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+  align-items: start;
+}
+
 .queuePane,
-.resultPane {
+.resultPane,
+.historyPane,
+.historyDetailPane {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -374,9 +485,14 @@ button:disabled,
   padding: 14px;
 }
 
-.resultPane {
+.resultPane,
+.historyDetailPane {
   min-height: 620px;
   padding: 16px;
+}
+
+.historyPane {
+  padding: 14px;
 }
 
 .paneHeader,
@@ -404,7 +520,8 @@ button:disabled,
 
 .fileList,
 .imageList,
-.errorList {
+.errorList,
+.historyGrid {
   display: grid;
   gap: 8px;
 }
@@ -488,6 +605,193 @@ button:disabled,
   overflow-wrap: anywhere;
 }
 
+.jobMeta.compactMeta {
+  margin: 0;
+}
+
+.jobMeta.compactMeta span {
+  padding: 4px 7px;
+  font-size: 11px;
+}
+
+.historyCard {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.historyCard.selected {
+  border-color: #91beb6;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.12);
+}
+
+.historyThumbButton,
+.historyThumbFallback {
+  position: relative;
+  display: grid;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  min-height: 160px;
+  place-items: center;
+  overflow: hidden;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background:
+    linear-gradient(45deg, #eef2ec 25%, transparent 25%),
+    linear-gradient(-45deg, #eef2ec 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #eef2ec 75%),
+    linear-gradient(-45deg, transparent 75%, #eef2ec 75%);
+  background-color: #fbfcf8;
+  background-position:
+    0 0,
+    0 8px,
+    8px -8px,
+    -8px 0;
+  background-size: 16px 16px;
+  color: #566150;
+}
+
+.historyThumbButton {
+  appearance: none;
+  cursor: zoom-in;
+  padding: 0;
+}
+
+.historyThumbButton img {
+  width: 100%;
+  height: 100%;
+  background: #111827;
+  object-fit: contain;
+}
+
+.historyThumbButton.failed {
+  cursor: default;
+  opacity: 1;
+}
+
+.historyThumbLabel {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  max-width: calc(100% - 56px);
+  border-radius: 6px;
+  background: rgba(17, 24, 39, 0.78);
+  padding: 5px 8px;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.historyThumbFallback {
+  gap: 6px;
+  padding: 18px;
+  text-align: center;
+}
+
+.historyCardBody {
+  display: grid;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  padding: 12px;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.historyCardBody:hover {
+  background: #f4faf6;
+}
+
+.historyCardTitle {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.historyCardTitle > div {
+  min-width: 0;
+}
+
+.historyCardTitle h3 {
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.historyFacts {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.historyFacts span,
+.historyDetailTimes span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.historyFacts svg,
+.statusBadge svg,
+.artifactLink svg,
+.downloadButton svg,
+.historyZipButton svg {
+  flex: 0 0 auto;
+}
+
+.artifactChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.artifactChip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  border: 1px solid #bfd1c9;
+  border-radius: 6px;
+  background: #f0faf8;
+  padding: 3px 7px;
+  color: var(--teal-dark);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.artifactChip.creative {
+  border-color: #ccbfe1;
+  background: #f5f1fb;
+  color: #594178;
+}
+
+.artifactChip.restored {
+  border-color: #c7d7f1;
+  background: #f1f6ff;
+  color: #34548a;
+}
+
+.artifactChip.muted {
+  border-color: var(--line);
+  background: #f7f8f3;
+  color: var(--muted);
+}
+
 .imageRow {
   width: 100%;
   text-align: left;
@@ -563,6 +867,60 @@ button:disabled,
   color: #7a2e26;
 }
 
+.historyDetailSummary {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(0, 1fr);
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.historyDetailTimes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.historyDetailTimes span {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fbfcf8;
+  padding: 6px 9px;
+}
+
+.historyDetailLayout {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.detailImageRail,
+.detailResult {
+  min-width: 0;
+}
+
+.detailImageRail {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 12px;
+}
+
+.compactPaneHeader {
+  margin-bottom: 10px;
+}
+
+.compactPaneHeader h2 {
+  font-size: 17px;
+}
+
+.detailEmptyState {
+  min-height: 360px;
+}
+
 .comparisonGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
@@ -617,6 +975,36 @@ button:disabled,
   background: #111827;
 }
 
+.previewButton {
+  appearance: none;
+  position: relative;
+  cursor: zoom-in;
+  padding: 0;
+}
+
+.previewButton:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.previewButton:hover {
+  border-color: var(--teal);
+}
+
+.previewZoomIcon {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: inline-grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  background: rgba(17, 24, 39, 0.72);
+  color: #ffffff;
+}
+
 .previewFallback {
   display: grid;
   place-items: center;
@@ -666,9 +1054,114 @@ button:disabled,
   color: var(--muted);
 }
 
+.historyEmptyState {
+  min-height: 360px;
+}
+
+.lightboxBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(15, 23, 42, 0.82);
+}
+
+.lightboxPanel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1120px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
+  background: #101418;
+  color: #f8fafc;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.38);
+}
+
+.lightboxHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 12px;
+}
+
+.lightboxHeader > div:first-child {
+  min-width: 0;
+}
+
+.lightboxHeader h2 {
+  font-size: 16px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.lightboxHeader span {
+  display: block;
+  margin-top: 4px;
+  color: #b7c3cc;
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.lightboxActions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.lightboxClose {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f8fafc;
+}
+
+.lightboxClose:hover {
+  border-color: rgba(255, 255, 255, 0.42);
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.lightboxImageFrame {
+  display: grid;
+  min-height: 360px;
+  place-items: center;
+  overflow: auto;
+  background: #050608;
+  padding: 12px;
+}
+
+.lightboxImageFrame img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 170px);
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.lightboxFallback {
+  color: #d8e0e6;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@media (max-width: 1180px) {
+  .galleryWorkspace {
+    grid-template-columns: 1fr;
+  }
+
+  .historyGrid {
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   }
 }
 
@@ -680,7 +1173,9 @@ button:disabled,
 }
 
 @media (max-width: 900px) {
-  .controlRowOptions {
+  .controlRowOptions,
+  .historyDetailSummary,
+  .historyDetailLayout {
     grid-template-columns: 1fr;
   }
 }
@@ -694,6 +1189,21 @@ button:disabled,
   .topBar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .topActions,
+  .viewTabs {
+    width: 100%;
+  }
+
+  .topActions {
+    justify-content: flex-start;
+  }
+
+  .viewTab {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 0 8px;
   }
 
   .controlBand {
@@ -727,7 +1237,58 @@ button:disabled,
     padding: 12px;
   }
 
+  .historyPane,
+  .historyDetailPane {
+    padding: 12px;
+  }
+
+  .historyGrid,
+  .historyDetailTimes,
   .statusGrid {
     grid-template-columns: 1fr;
+  }
+
+  .historyThumbButton,
+  .historyThumbFallback {
+    min-height: 140px;
+  }
+
+  .historyCardTitle {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .detailImageRail {
+    padding: 10px;
+  }
+
+  .lightboxBackdrop {
+    padding: 10px;
+  }
+
+  .lightboxPanel {
+    max-height: calc(100vh - 20px);
+  }
+
+  .lightboxHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .lightboxActions {
+    width: 100%;
+  }
+
+  .lightboxDownload {
+    flex: 1 1 auto;
+  }
+
+  .lightboxImageFrame {
+    min-height: 260px;
+    padding: 8px;
+  }
+
+  .lightboxImageFrame img {
+    max-height: calc(100vh - 230px);
   }
 }

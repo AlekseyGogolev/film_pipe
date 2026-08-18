@@ -1,6 +1,6 @@
 # FilmPipe
 
-FilmPipe is a local application foundation for processing film scans. The current MVP has core domain contracts, pipeline orchestration, filesystem artifact storage, logging, tests, a local HTTP API, a B&W negative-to-positive path, already-positive input handling, optional AI restoration, optional backend Creative processing, and a minimal React/Vite frontend.
+FilmPipe is a local application foundation for processing film scans. The current MVP has core domain contracts, pipeline orchestration, filesystem artifact storage, persistent job manifests, an in-process background queue, logging, tests, a local HTTP API, a B&W negative-to-positive path, already-positive input handling, optional AI restoration, optional backend Creative processing, and a React/Vite frontend with processing console plus history gallery.
 
 The processing pipeline is built from three independent job options:
 
@@ -38,7 +38,7 @@ VS Code workspace settings point Python/Pylance at `.venv/bin/python` and add `b
 ## Run Tests
 
 ```bash
-pytest
+.venv/bin/python -m pytest
 cd frontend
 npm run build
 ```
@@ -72,7 +72,10 @@ for artifact in result.artifacts:
 PY
 ```
 
-Artifacts are written under `data/jobs/{job_id}/{image_id}/{artifact_type}/`.
+Uploads, artifacts, and job history are written under `data/jobs/{job_id}/`.
+Uploaded source files are staged under `inputs/{index}/`, public artifacts are
+written under `{image_id}/{artifact_type}/`, and each non-legacy job has a
+`job.json` manifest.
 
 ## AI Restoration Models
 
@@ -200,7 +203,13 @@ curl -X POST http://127.0.0.1:8000/jobs \
 `final_processing=creative`. `final_processing=standard` does not start or
 contact the Creative runtime.
 
-`POST /jobs` processes synchronously for the MVP and returns the final job state. Frontend polling should use:
+`POST /jobs` is asynchronous. The handler validates the form, persists uploads
+under `data/jobs/{job_id}/inputs/{index}/`, writes
+`data/jobs/{job_id}/job.json`, enqueues local background processing, and returns
+HTTP `201` quickly with the current `pending` job representation. A single
+in-process worker runs jobs sequentially for local MVP safety.
+
+Poll job state with:
 
 ```text
 GET /jobs/{job_id}
@@ -215,9 +224,23 @@ status
 input_processing
 restoration
 final_processing
+creative_prompt
+created_at
+updated_at
 images[]
 errors[]
 download_url
+legacy
+```
+
+Status semantics:
+
+```text
+pending          saved before a worker starts
+running          at least one image is pending/running after work starts
+success          all images succeeded
+failed           all images failed or the worker failed without recoverable output
+partial_success  terminal mixed/recoverable state after active work is done
 ```
 
 Each image includes:
@@ -232,6 +255,30 @@ errors[]
 
 Each artifact includes `type`, `filename`, `mime_type`, `preview_url`, and `download_url`; filesystem paths are not exposed.
 
+List persisted history with:
+
+```text
+GET /jobs
+```
+
+The response is `{ "jobs": [...] }`, ordered newest first by stored timestamps.
+It includes pending/running jobs, manifest-backed completed jobs after backend
+restart, and legacy job folders reconstructed from existing artifact
+directories when no `job.json` exists.
+
+Persistent manifests are API-safe JSON files at:
+
+```text
+data/jobs/{job_id}/job.json
+```
+
+Manifests store enum options, timestamps, inputs, image records, errors, and
+artifact relative paths. Internal artifact paths are rebuilt server-side and are
+never included in API responses. Legacy reconstructed jobs default unknown
+options to `input_processing=bw_negative`, `restoration=off`, and
+`final_processing=standard`, and include `legacy: true`; those inferred option
+values should not be treated as exact historical settings.
+
 Artifact endpoints:
 
 ```text
@@ -242,6 +289,11 @@ GET /jobs/{job_id}/images/{image_id}/artifacts/{artifact_type}/download
 `/preview` returns a browser-friendly PNG representation generated from the
 stored artifact. `/download` returns the stored artifact bytes and MIME type, so
 MVP positive downloads remain 16-bit TIFF masters.
+
+The frontend may append `?max_edge=512` for gallery thumbnails or
+`?max_edge=1920` for fullscreen previews. The current backend accepts those
+query strings by ignoring unknown query parameters; it does not resize previews
+by `max_edge` yet.
 
 Batch ZIP export:
 
@@ -258,6 +310,21 @@ standard`, no generated artifact exists, so the batch ZIP endpoint returns
 Requests with unknown form fields receive a clear `400` response. The API
 accepts only `files`, `input_processing`, `restoration`, `final_processing`,
 and `creative_prompt` for job creation.
+
+## Frontend UX
+
+The frontend starts on the Processing Console, where job creation returns as
+soon as the backend accepts the work. The active job is polled while it is
+`pending` or `running`, and the history list is also polled while any listed job
+is active. Poll errors are shown without discarding the last known job state.
+
+The Gallery tab uses `GET /jobs` to show previous jobs from persistent history.
+Job cards show a best-available thumbnail in this order: `creative`,
+`restored`, `positive`, then `original`; status; timestamps; image count;
+processing option chips; generated artifact chips; and batch ZIP download when
+generated artifacts exist. Selecting a job opens image/artifact details. Any
+preview can be opened in a fullscreen lightbox; the lightbox uses
+`preview_url` for viewing and `download_url` for downloading the stored master.
 
 ## Local Frontend
 
