@@ -592,3 +592,93 @@ def test_missing_input_processing_defaults_to_bw_negative(tmp_path):
 
     assert response.status_code == 201
     assert response.json()["input_processing"] == "bw_negative"
+
+
+def test_default_registry_persists_job_for_new_app_instance(tmp_path):
+    setup_logging(tmp_path / "logs")
+    jobs_root = tmp_path / "jobs"
+    service = JobService(
+        storage=FileSystemArtifactStore(jobs_root),
+        pipeline_factory=_default_test_pipeline,
+    )
+    client = ASGITestClient(create_app(job_service=service))
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "bw_negative"},
+        files=[("files", _negative_upload(tmp_path))],
+    )
+
+    assert response.status_code == 201
+    job = response.json()
+    assert (jobs_root / job["id"] / "job.json").is_file()
+
+    reloaded_client = ASGITestClient(
+        create_app(
+            job_service=JobService(
+                storage=FileSystemArtifactStore(jobs_root),
+                pipeline_factory=_default_test_pipeline,
+            )
+        )
+    )
+    jobs_response = reloaded_client.get("/jobs")
+    assert jobs_response.status_code == 200
+    assert [listed_job["id"] for listed_job in jobs_response.json()["jobs"]] == [
+        job["id"]
+    ]
+
+    job_response = reloaded_client.get(f"/jobs/{job['id']}")
+    assert job_response.status_code == 200
+    artifacts = {
+        artifact["type"]: artifact
+        for artifact in job_response.json()["images"][0]["artifacts"]
+    }
+    assert reloaded_client.get(artifacts["positive"]["preview_url"]).status_code == 200
+    assert reloaded_client.get(artifacts["positive"]["download_url"]).status_code == 200
+
+
+def test_legacy_job_directory_is_visible_through_api(tmp_path):
+    setup_logging(tmp_path / "logs")
+    jobs_root = tmp_path / "jobs"
+    original = (
+        jobs_root
+        / "legacy-job"
+        / "image-1"
+        / "original"
+        / "legacy_scan.tiff"
+    )
+    positive = (
+        jobs_root
+        / "legacy-job"
+        / "image-1"
+        / "positive"
+        / "legacy_scan_positive.tiff"
+    )
+    original.parent.mkdir(parents=True)
+    positive.parent.mkdir(parents=True)
+    write_image(original, synthetic_bw_negative_16bit())
+    write_image(positive, synthetic_bw_negative_16bit())
+    client = ASGITestClient(
+        create_app(
+            job_service=JobService(
+                storage=FileSystemArtifactStore(jobs_root),
+                pipeline_factory=_default_test_pipeline,
+            )
+        )
+    )
+
+    jobs_response = client.get("/jobs")
+    assert jobs_response.status_code == 200
+    job = jobs_response.json()["jobs"][0]
+    assert job["id"] == "legacy-job"
+    assert job["legacy"] is True
+
+    job_response = client.get("/jobs/legacy-job")
+    assert job_response.status_code == 200
+    artifacts = {
+        artifact["type"]: artifact
+        for artifact in job_response.json()["images"][0]["artifacts"]
+    }
+    assert client.get(artifacts["positive"]["preview_url"]).status_code == 200
+    download = client.get(artifacts["positive"]["download_url"])
+    assert download.status_code == 200
+    assert download.headers["content-type"] == "image/tiff"

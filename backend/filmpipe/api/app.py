@@ -7,7 +7,7 @@ import re
 from tempfile import TemporaryDirectory
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from filmpipe.application.jobs import InMemoryJobRegistry, JobService
+from filmpipe.application.jobs import JobRegistry, JobService
 from filmpipe.domain.models import (
     Artifact,
     ArtifactType,
@@ -19,6 +19,7 @@ from filmpipe.domain.models import (
     ProcessingOptions,
     RestorationMode,
 )
+from filmpipe.infrastructure.job_store import FileSystemJobRegistry
 from filmpipe.processing.preview import PREVIEW_MIME_TYPE, PreviewRenderError, render_preview_png
 
 try:
@@ -37,7 +38,7 @@ except ImportError:  # pragma: no cover - exercised only without installed deps
 def create_app(
     *,
     job_service: JobService | None = None,
-    job_registry: InMemoryJobRegistry | None = None,
+    job_registry: JobRegistry | None = None,
 ):
     if FastAPI is None:
         raise RuntimeError(
@@ -46,7 +47,7 @@ def create_app(
         )
 
     service = job_service or JobService()
-    registry = job_registry or InMemoryJobRegistry()
+    registry = job_registry or FileSystemJobRegistry(service.storage.root)
     app = FastAPI(
         title="FilmPipe",
         version="0.1.0",
@@ -186,11 +187,13 @@ def _job_response(job: ProcessingJob) -> dict[str, object]:
         "input_processing": job.options.input_processing.value,
         "restoration": job.options.restoration.value,
         "final_processing": job.options.final_processing.value,
+        "creative_prompt": job.options.creative_prompt,
         "created_at": job.created_at.isoformat(),
         "updated_at": job.updated_at.isoformat(),
         "images": [_image_response(job.id, result) for result in job.results],
         "errors": [_error_response(error) for error in job.errors],
         "download_url": f"/jobs/{job.id}/download",
+        "legacy": job.legacy,
     }
 
 
@@ -298,7 +301,7 @@ def _normalize_creative_prompt(
     return normalized
 
 
-def _get_job(registry: InMemoryJobRegistry, job_id: str) -> ProcessingJob:
+def _get_job(registry: JobRegistry, job_id: str) -> ProcessingJob:
     job = registry.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job не найден.")
@@ -313,7 +316,7 @@ def _get_image(job: ProcessingJob, image_id: str) -> ImageProcessingResult:
 
 
 def _get_artifact(
-    registry: InMemoryJobRegistry,
+    registry: JobRegistry,
     job_id: str,
     image_id: str,
     artifact_type: ArtifactType,

@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from inspect import Parameter, signature
 from pathlib import Path
 from threading import RLock
+from typing import Protocol
 from uuid import uuid4
 
 from filmpipe.domain.models import (
@@ -17,6 +18,20 @@ from filmpipe.infrastructure.logging import get_logger
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.engine import default_pipeline, process_image
 from filmpipe.processing.pipeline import ProcessingPipeline
+
+
+class JobRegistry(Protocol):
+    def save(self, job: ProcessingJob) -> ProcessingJob: ...
+
+    def get(self, job_id: str) -> ProcessingJob | None: ...
+
+    def list(self) -> list[ProcessingJob]: ...
+
+    def update(
+        self,
+        job_id: str,
+        mutate: Callable[[ProcessingJob], None],
+    ) -> ProcessingJob | None: ...
 
 
 class InMemoryJobRegistry:
@@ -36,6 +51,19 @@ class InMemoryJobRegistry:
     def list(self) -> list[ProcessingJob]:
         with self._lock:
             return list(self._jobs.values())
+
+    def update(
+        self,
+        job_id: str,
+        mutate: Callable[[ProcessingJob], None],
+    ) -> ProcessingJob | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return None
+            mutate(job)
+            self._jobs[job.id] = job
+            return job
 
 
 class JobService:

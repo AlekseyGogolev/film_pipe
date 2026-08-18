@@ -121,6 +121,7 @@ class ProcessingJob:
     errors: list[ProcessingError] = field(default_factory=list)
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
+    legacy: bool = False
 
     def recompute_status(self) -> ProcessingStatus:
         self.updated_at = utc_now()
@@ -130,12 +131,13 @@ class ProcessingJob:
             return self.status
 
         statuses = {result.status for result in self.results}
-        if statuses == {ProcessingStatus.SUCCESS}:
+        active_statuses = {ProcessingStatus.PENDING, ProcessingStatus.RUNNING}
+        if statuses & active_statuses:
+            self.status = ProcessingStatus.RUNNING
+        elif statuses == {ProcessingStatus.SUCCESS}:
             self.status = ProcessingStatus.SUCCESS
         elif statuses == {ProcessingStatus.FAILED}:
             self.status = ProcessingStatus.FAILED
-        elif statuses <= {ProcessingStatus.PENDING, ProcessingStatus.RUNNING}:
-            self.status = ProcessingStatus.RUNNING
         else:
             self.status = ProcessingStatus.PARTIAL_SUCCESS
 

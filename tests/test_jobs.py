@@ -42,3 +42,9 @@ def test_job_status_mixed_partial_success():
     job = _job(ProcessingStatus.SUCCESS, ProcessingStatus.FAILED)
 
     assert job.recompute_status() == ProcessingStatus.PARTIAL_SUCCESS
+
+
+def test_job_status_waits_while_mixed_with_active_images():
+    job = _job(ProcessingStatus.SUCCESS, ProcessingStatus.PENDING)
+
+    assert job.recompute_status() == ProcessingStatus.RUNNING
