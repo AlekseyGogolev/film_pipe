@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from io import BytesIO
 import json
 from pathlib import Path
+import time
+from threading import Event
 from tempfile import TemporaryDirectory
 from typing import Any
 from urllib.parse import urlsplit
@@ -25,6 +27,7 @@ from filmpipe.domain.models import (
     RestorationMode,
 )
 from filmpipe.domain.processor import ProcessingContext, ProcessorResult
+from filmpipe.infrastructure.job_store import FileSystemJobRegistry
 from filmpipe.infrastructure.logging import setup_logging
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
 from filmpipe.processing.pipeline import ProcessingPipeline
@@ -38,6 +41,9 @@ from filmpipe.processing.processors import (
 )
 
 from tests.image_fixtures import synthetic_bw_negative_16bit, write_image
+
+
+TERMINAL_JOB_STATUSES = {"success", "partial_success", "failed"}
 
 
 @dataclass
@@ -131,6 +137,17 @@ class ASGITestClient:
         )
 
 
+class RecordingQueue:
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    def enqueue(self, job_id: str) -> None:
+        self.enqueued.append(job_id)
+
+    def shutdown(self, *, wait: bool = False) -> None:
+        pass
+
+
 def _client(tmp_path, *, pipeline_factory=None) -> ASGITestClient:
     setup_logging(tmp_path / "logs")
     service = JobService(
@@ -142,6 +159,26 @@ def _client(tmp_path, *, pipeline_factory=None) -> ASGITestClient:
         job_registry=InMemoryJobRegistry(),
     )
     return ASGITestClient(app)
+
+
+def _wait_for_job(
+    client: ASGITestClient,
+    job_id: str,
+    *,
+    statuses: set[str] | None = None,
+    timeout: float = 5.0,
+) -> dict[str, Any]:
+    expected_statuses = statuses or TERMINAL_JOB_STATUSES
+    deadline = time.monotonic() + timeout
+    last_job: dict[str, Any] | None = None
+    while time.monotonic() < deadline:
+        response = client.get(f"/jobs/{job_id}")
+        assert response.status_code == 200
+        last_job = response.json()
+        if last_job["status"] in expected_statuses:
+            return last_job
+        time.sleep(0.01)
+    raise AssertionError(f"Timed out waiting for job {job_id}: {last_job}")
 
 
 def _default_test_pipeline(options: ProcessingOptions | None = None) -> ProcessingPipeline:
@@ -230,6 +267,39 @@ class CreativeArtifactStubProcessor:
         return ProcessorResult.success(image=image, artifacts=[artifact])
 
 
+@dataclass
+class BlockingProcessor:
+    started: Event
+    release: Event
+    name: str = "blocking_test_processor"
+    optional: bool = False
+
+    def process(self, image: Any, context: ProcessingContext) -> ProcessorResult:
+        self.started.set()
+        assert self.release.wait(timeout=5)
+        return ProcessorResult.success(image=image)
+
+
+@dataclass
+class SecondImageBlockingProcessor:
+    first_completed: Event
+    second_started: Event
+    release_second: Event
+    calls: int = 0
+    name: str = "second_image_blocking_processor"
+    optional: bool = False
+
+    def process(self, image: Any, context: ProcessingContext) -> ProcessorResult:
+        self.calls += 1
+        if self.calls == 1:
+            self.first_completed.set()
+            return ProcessorResult.success(image=image)
+
+        self.second_started.set()
+        assert self.release_second.wait(timeout=5)
+        return ProcessorResult.success(image=image)
+
+
 def _to_png_stub_image(image: np.ndarray) -> np.ndarray:
     if image.dtype == np.uint8:
         return image
@@ -303,7 +373,12 @@ def test_create_job_single_success_and_artifact_download(tmp_path):
     )
 
     assert response.status_code == 201
-    job = response.json()
+    submitted_job = response.json()
+    assert submitted_job["status"] == "pending"
+    assert len(submitted_job["images"]) == 1
+    assert submitted_job["images"][0]["status"] == "pending"
+
+    job = _wait_for_job(client, submitted_job["id"])
     assert job["status"] == "success"
     assert job["input_processing"] == "bw_negative"
     assert job["restoration"] == "off"
@@ -341,6 +416,167 @@ def test_create_job_single_success_and_artifact_download(tmp_path):
     assert original_preview.headers["content-type"] == "image/png"
 
 
+def test_create_job_returns_before_slow_processing_finishes(tmp_path):
+    started = Event()
+    release = Event()
+    client = _client(
+        tmp_path,
+        pipeline_factory=lambda _options=None: ProcessingPipeline(
+            [BlockingProcessor(started=started, release=release)]
+        ),
+    )
+
+    started_at = time.monotonic()
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "bw_negative"},
+        files=[("files", _negative_upload(tmp_path))],
+    )
+    elapsed = time.monotonic() - started_at
+
+    assert response.status_code == 201
+    assert elapsed < 0.5
+    job = response.json()
+    assert job["status"] == "pending"
+    assert started.wait(timeout=1)
+
+    running_job = _wait_for_job(
+        client,
+        job["id"],
+        statuses={"running"},
+        timeout=1,
+    )
+    assert running_job["images"][0]["status"] == "running"
+
+    listed = client.get("/jobs")
+    assert listed.status_code == 200
+    assert listed.json()["jobs"][0]["id"] == job["id"]
+
+    release.set()
+    completed_job = _wait_for_job(client, job["id"])
+    assert completed_job["status"] == "success"
+
+
+def test_create_job_persists_uploads_and_manifest_before_enqueue(tmp_path):
+    setup_logging(tmp_path / "logs")
+    jobs_root = tmp_path / "jobs"
+    queue = RecordingQueue()
+    service = JobService(
+        storage=FileSystemArtifactStore(jobs_root),
+        pipeline_factory=_default_test_pipeline,
+    )
+    client = ASGITestClient(
+        create_app(
+            job_service=service,
+            job_registry=FileSystemJobRegistry(jobs_root),
+            job_queue=queue,
+        )
+    )
+
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "bw_negative"},
+        files=[("files", _negative_upload(tmp_path))],
+    )
+
+    assert response.status_code == 201
+    job_id = response.json()["id"]
+    manifest_path = jobs_root / job_id / "job.json"
+    upload_path = jobs_root / job_id / "inputs" / "0" / "scan.tiff"
+    manifest = json.loads(manifest_path.read_text("utf-8"))
+    assert upload_path.is_file()
+    assert manifest["status"] == "pending"
+    assert manifest["inputs"] == ["inputs/0/scan.tiff"]
+    assert queue.enqueued == [job_id]
+
+
+def test_async_job_manifest_tracks_running_and_terminal_states(tmp_path):
+    setup_logging(tmp_path / "logs")
+    started = Event()
+    release = Event()
+    jobs_root = tmp_path / "jobs"
+    service = JobService(
+        storage=FileSystemArtifactStore(jobs_root),
+        pipeline_factory=lambda _options=None: ProcessingPipeline(
+            [BlockingProcessor(started=started, release=release)]
+        ),
+    )
+    client = ASGITestClient(
+        create_app(
+            job_service=service,
+            job_registry=FileSystemJobRegistry(jobs_root),
+        )
+    )
+
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "bw_negative"},
+        files=[("files", _negative_upload(tmp_path))],
+    )
+
+    assert response.status_code == 201
+    job_id = response.json()["id"]
+    manifest_path = jobs_root / job_id / "job.json"
+
+    assert started.wait(timeout=1)
+    running_job = _wait_for_job(
+        client,
+        job_id,
+        statuses={"running"},
+        timeout=1,
+    )
+    running_manifest = json.loads(manifest_path.read_text("utf-8"))
+    assert running_job["images"][0]["status"] == "running"
+    assert running_manifest["status"] == "running"
+    assert running_manifest["images"][0]["status"] == "running"
+
+    release.set()
+    completed_job = _wait_for_job(client, job_id)
+    completed_manifest = json.loads(manifest_path.read_text("utf-8"))
+    assert completed_job["status"] == "success"
+    assert completed_manifest["status"] == "success"
+    assert completed_manifest["images"][0]["status"] == "success"
+
+
+def test_polling_shows_image_progress_while_batch_job_runs(tmp_path):
+    first_completed = Event()
+    second_started = Event()
+    release_second = Event()
+    processor = SecondImageBlockingProcessor(
+        first_completed=first_completed,
+        second_started=second_started,
+        release_second=release_second,
+    )
+    client = _client(
+        tmp_path,
+        pipeline_factory=lambda _options=None: ProcessingPipeline([processor]),
+    )
+
+    response = client.post_multipart(
+        "/jobs",
+        data={"input_processing": "bw_negative"},
+        files=[
+            ("files", _negative_upload(tmp_path, "first.tiff")),
+            ("files", _negative_upload(tmp_path, "second.tiff")),
+        ],
+    )
+
+    assert response.status_code == 201
+    job_id = response.json()["id"]
+    assert first_completed.wait(timeout=1)
+    assert second_started.wait(timeout=1)
+
+    progress = client.get(f"/jobs/{job_id}")
+    assert progress.status_code == 200
+    job = progress.json()
+    assert job["status"] == "running"
+    assert [image["status"] for image in job["images"]] == ["success", "running"]
+
+    release_second.set()
+    completed_job = _wait_for_job(client, job_id)
+    assert completed_job["status"] == "success"
+
+
 def test_batch_job_is_partial_when_one_image_fails(tmp_path):
     client = _client(tmp_path)
     response = client.post_multipart(
@@ -353,7 +589,7 @@ def test_batch_job_is_partial_when_one_image_fails(tmp_path):
     )
 
     assert response.status_code == 201
-    job = response.json()
+    job = _wait_for_job(client, response.json()["id"])
     assert job["status"] == "partial_success"
     assert [image["status"] for image in job["images"]] == ["success", "failed"]
 
@@ -388,7 +624,7 @@ def test_optional_failure_after_positive_preserves_artifact(tmp_path):
     )
 
     assert response.status_code == 201
-    job = response.json()
+    job = _wait_for_job(client, response.json()["id"])
     image = job["images"][0]
     assert job["status"] == "partial_success"
     assert image["status"] == "partial_success"
@@ -415,7 +651,7 @@ def test_optional_failure_after_already_positive_preserves_base_result(tmp_path)
     )
 
     assert response.status_code == 201
-    job = response.json()
+    job = _wait_for_job(client, response.json()["id"])
     image = job["images"][0]
     assert job["status"] == "partial_success"
     assert image["status"] == "partial_success"
@@ -460,7 +696,7 @@ def test_already_positive_off_returns_only_original_artifact(tmp_path):
     )
 
     assert response.status_code == 201
-    job = response.json()
+    job = _wait_for_job(client, response.json()["id"])
     assert job["status"] == "success"
 
     image = job["images"][0]
@@ -492,7 +728,8 @@ def test_public_artifact_matrix(tmp_path, input_processing, restoration, expecte
     )
 
     assert response.status_code == 201
-    image = response.json()["images"][0]
+    job = _wait_for_job(client, response.json()["id"])
+    image = job["images"][0]
     assert {artifact["type"] for artifact in image["artifacts"]} == expected_artifacts
 
 
@@ -507,7 +744,8 @@ def test_restoration_values_are_accepted_and_serialized(tmp_path):
         )
 
         assert response.status_code == 201
-        job = response.json()
+        submitted_job = response.json()
+        job = _wait_for_job(client, submitted_job["id"])
         assert job["restoration"] == restoration
 
 
@@ -520,7 +758,8 @@ def test_final_processing_values_are_accepted_and_serialized(tmp_path):
         files=[("files", _negative_upload(tmp_path, "standard.tiff"))],
     )
     assert standard.status_code == 201
-    assert standard.json()["final_processing"] == "standard"
+    standard_job = _wait_for_job(client, standard.json()["id"])
+    assert standard_job["final_processing"] == "standard"
 
     creative = client.post_multipart(
         "/jobs",
@@ -532,7 +771,7 @@ def test_final_processing_values_are_accepted_and_serialized(tmp_path):
         files=[("files", _negative_upload(tmp_path, "creative.tiff"))],
     )
     assert creative.status_code == 201
-    job = creative.json()
+    job = _wait_for_job(client, creative.json()["id"])
     assert job["final_processing"] == "creative"
     artifacts = {artifact["type"] for artifact in job["images"][0]["artifacts"]}
     assert artifacts == {"original", "positive", "creative"}
@@ -591,7 +830,8 @@ def test_missing_input_processing_defaults_to_bw_negative(tmp_path):
     )
 
     assert response.status_code == 201
-    assert response.json()["input_processing"] == "bw_negative"
+    job = _wait_for_job(client, response.json()["id"])
+    assert job["input_processing"] == "bw_negative"
 
 
 def test_default_registry_persists_job_for_new_app_instance(tmp_path):
@@ -609,7 +849,7 @@ def test_default_registry_persists_job_for_new_app_instance(tmp_path):
     )
 
     assert response.status_code == 201
-    job = response.json()
+    job = _wait_for_job(client, response.json()["id"])
     assert (jobs_root / job["id"] / "job.json").is_file()
 
     reloaded_client = ASGITestClient(

@@ -131,6 +131,10 @@ class ProcessingJob:
             return self.status
 
         statuses = {result.status for result in self.results}
+        if statuses == {ProcessingStatus.PENDING} and self.status == ProcessingStatus.PENDING:
+            self.status = ProcessingStatus.PENDING
+            return self.status
+
         active_statuses = {ProcessingStatus.PENDING, ProcessingStatus.RUNNING}
         if statuses & active_statuses:
             self.status = ProcessingStatus.RUNNING

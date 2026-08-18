@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 import re
-from tempfile import TemporaryDirectory
+from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from filmpipe.application.jobs import JobRegistry, JobService
+from filmpipe.application.queue import JobQueue
 from filmpipe.domain.models import (
     Artifact,
     ArtifactType,
@@ -39,6 +41,7 @@ def create_app(
     *,
     job_service: JobService | None = None,
     job_registry: JobRegistry | None = None,
+    job_queue: JobQueue | None = None,
 ):
     if FastAPI is None:
         raise RuntimeError(
@@ -48,13 +51,24 @@ def create_app(
 
     service = job_service or JobService()
     registry = job_registry or FileSystemJobRegistry(service.storage.root)
+    queue = job_queue or JobQueue(service=service, registry=registry)
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            queue.shutdown(wait=False)
+
     app = FastAPI(
         title="FilmPipe",
         version="0.1.0",
         description="Local FilmPipe API for B&W film scan processing jobs.",
+        lifespan=lifespan,
     )
     app.state.job_service = service
     app.state.job_registry = registry
+    app.state.job_queue = queue
 
     @app.get("/health")
     async def health() -> dict[str, str]:
@@ -91,22 +105,17 @@ def create_app(
             final_processing=final_processing_mode,
             creative_prompt=normalized_creative_prompt,
         )
-        with TemporaryDirectory(prefix="filmpipe-upload-") as temporary_dir:
-            upload_paths: list[Path] = []
-            temporary_root = Path(temporary_dir)
-            for index, upload in enumerate(files):
-                filename = _safe_upload_filename(upload.filename, index)
-                upload_dir = temporary_root / str(index)
-                upload_dir.mkdir(parents=True, exist_ok=True)
-                upload_path = upload_dir / filename
-                upload_path.write_bytes(await upload.read())
-                await upload.close()
-                upload_paths.append(upload_path)
-
-            job = service.process(upload_paths, options=options)
-
+        job_id = uuid4().hex
+        upload_paths = await _persist_uploads(
+            files,
+            jobs_root=service.storage.root,
+            job_id=job_id,
+        )
+        job = service.create_pending_job(upload_paths, options=options, job_id=job_id)
         registry.save(job)
-        return _job_response(job)
+        response = _job_response(job)
+        queue.enqueue(job.id)
+        return response
 
     @app.get("/jobs/{job_id}")
     async def get_job(job_id: str) -> dict[str, object]:
@@ -327,6 +336,27 @@ def _get_artifact(
     if artifact is None or not artifact.path.is_file():
         raise HTTPException(status_code=404, detail="Артефакт не найден.")
     return artifact
+
+
+async def _persist_uploads(
+    files: list[UploadFile],
+    *,
+    jobs_root: Path,
+    job_id: str,
+) -> list[Path]:
+    upload_paths: list[Path] = []
+    upload_root = Path(jobs_root) / _safe_segment(job_id) / "inputs"
+    for index, upload in enumerate(files):
+        filename = _safe_upload_filename(upload.filename, index)
+        upload_dir = upload_root / str(index)
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        upload_path = upload_dir / filename
+        try:
+            upload_path.write_bytes(await upload.read())
+        finally:
+            await upload.close()
+        upload_paths.append(upload_path)
+    return upload_paths
 
 
 def _safe_upload_filename(filename: str | None, index: int) -> str:

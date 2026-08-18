@@ -16,7 +16,7 @@ from filmpipe.domain.models import (
 )
 from filmpipe.infrastructure.logging import get_logger
 from filmpipe.infrastructure.storage import FileSystemArtifactStore
-from filmpipe.processing.engine import default_pipeline, process_image
+from filmpipe.processing.engine import default_pipeline, process_image as process_single_image
 from filmpipe.processing.pipeline import ProcessingPipeline
 
 
@@ -84,13 +84,8 @@ class JobService:
         job_id: str | None = None,
     ) -> ProcessingJob:
         options = options or ProcessingOptions()
-        input_paths = [Path(input_path) for input_path in inputs]
-        job = ProcessingJob(
-            id=job_id or uuid4().hex,
-            inputs=input_paths,
-            options=options,
-            status=ProcessingStatus.RUNNING,
-        )
+        job = self.create_pending_job(inputs, options=options, job_id=job_id)
+        job.status = ProcessingStatus.RUNNING
 
         logger = get_logger(job_id=job.id)
         logger.info(
@@ -98,41 +93,82 @@ class JobService:
             options.input_processing.value,
             options.restoration.value,
             options.final_processing.value,
-            len(input_paths),
+            len(job.inputs),
         )
 
-        for input_path in input_paths:
-            image_id = uuid4().hex
-            try:
-                image_result = process_image(
-                    input_path,
-                    options=options,
-                    storage=self.storage,
-                    pipeline=self._pipeline_for(options),
-                    job_id=job.id,
-                    image_id=image_id,
-                )
-            except Exception as exc:
-                image_logger = get_logger(job_id=job.id, image_id=image_id)
-                image_logger.exception("image_processing_unhandled_failed")
-                image_result = ImageProcessingResult(
-                    image_id=image_id,
-                    filename=input_path.name,
-                    status=ProcessingStatus.FAILED,
-                )
-                image_result.add_error(
-                    ProcessingError.from_exception(
-                        stage="job",
-                        user_message=f"Не удалось обработать {input_path.name}.",
-                        exc=exc,
-                        recoverable=False,
-                    )
-                )
-            job.results.append(image_result)
+        for index, input_path in enumerate(job.inputs):
+            image_id = job.results[index].image_id
+            job.results[index] = self.process_image(
+                input_path,
+                options=options,
+                job_id=job.id,
+                image_id=image_id,
+            )
 
         job.recompute_status()
         logger.info("job_completed", extra={"status": job.status.value})
         return job
+
+    def create_pending_job(
+        self,
+        inputs: Iterable[Path | str],
+        *,
+        options: ProcessingOptions | None = None,
+        job_id: str | None = None,
+    ) -> ProcessingJob:
+        input_paths = [Path(input_path) for input_path in inputs]
+        results = [
+            ImageProcessingResult(
+                image_id=uuid4().hex,
+                filename=input_path.name,
+                status=ProcessingStatus.PENDING,
+            )
+            for input_path in input_paths
+        ]
+        return ProcessingJob(
+            id=job_id or uuid4().hex,
+            inputs=input_paths,
+            options=options or ProcessingOptions(),
+            status=ProcessingStatus.PENDING,
+            results=results,
+        )
+
+    def process_image(
+        self,
+        input_path: Path | str,
+        *,
+        options: ProcessingOptions | None = None,
+        job_id: str,
+        image_id: str,
+    ) -> ImageProcessingResult:
+        source = Path(input_path)
+        options = options or ProcessingOptions()
+        try:
+            return process_single_image(
+                source,
+                options=options,
+                storage=self.storage,
+                pipeline=self._pipeline_for(options),
+                job_id=job_id,
+                image_id=image_id,
+            )
+        except Exception as exc:
+            image_logger = get_logger(job_id=job_id, image_id=image_id)
+            image_logger.exception("image_processing_unhandled_failed")
+            image_result = ImageProcessingResult(
+                image_id=image_id,
+                filename=source.name,
+                status=ProcessingStatus.FAILED,
+            )
+            image_result.add_error(
+                ProcessingError.from_exception(
+                    stage="job",
+                    user_message=f"Не удалось обработать {source.name}.",
+                    exc=exc,
+                    recoverable=False,
+                )
+            )
+            return image_result
 
     def _pipeline_for(self, options: ProcessingOptions) -> ProcessingPipeline:
         try:
